@@ -56,6 +56,12 @@ Metrics fields may be `null`. On load, each model is auto-aligned into a shared 
 
 Reload the page after editing the manifest.
 
+### Local overlay (optional)
+
+For machine-local / pipeline results without dirtying git, add `manifest.local.json`
+(gitignored). The viewer merges it on top of `manifest.json`. The training pipeline
+writes this file automatically and symlinks `splats/bench_*.ply`.
+
 ## Demo assets
 
 This repo ships two Truck (Tanks and Temples) demo PLYs under `splats/` so the viewer works out of the box:

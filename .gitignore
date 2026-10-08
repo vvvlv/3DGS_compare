@@ -1,6 +1,9 @@
 # Local / oversized splat dumps (keep demo PLYs that are committed intentionally)
 splats/*.ply.bak
 splats/.tmp*
+splats/bench_*.ply
+splats/local_*.ply
+manifest.local.json
 *.ckpt
 .DS_Store
 Thumbs.db

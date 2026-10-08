@@ -755,13 +755,43 @@ function setupSettingsUI() {
   });
 }
 
-async function main() {
-  setupSettingsUI();
-
-  const manifest = await fetch("./manifest.json").then((r) => {
+/** Merge public manifest.json with optional local overlay (pipeline bench / TA assets). */
+async function loadMergedManifest() {
+  const base = await fetch("./manifest.json").then((r) => {
     if (!r.ok) throw new Error(`manifest.json ${r.status}`);
     return r.json();
   });
+  let local = null;
+  try {
+    const r = await fetch("./manifest.local.json", { cache: "no-store" });
+    if (r.ok) local = await r.json();
+  } catch (_) {
+    /* optional */
+  }
+
+  const byId = new Map();
+  for (const m of base.methods || []) byId.set(m.id, m);
+  for (const m of local?.methods || []) byId.set(m.id, m); // local overrides / adds
+
+  const methodsList = [...byId.values()];
+  // Prefer local defaults when they resolve to a known method
+  const default_left =
+    (local?.default_left && byId.has(local.default_left) && local.default_left) ||
+    base.default_left ||
+    methodsList[0]?.id;
+  const default_right =
+    (local?.default_right && byId.has(local.default_right) && local.default_right) ||
+    base.default_right ||
+    methodsList[1]?.id ||
+    default_left;
+
+  return { default_left, default_right, methods: methodsList };
+}
+
+async function main() {
+  setupSettingsUI();
+
+  const manifest = await loadMergedManifest();
   methods = manifest.methods || [];
   methodById = new Map(methods.map((m) => [m.id, m]));
   if (!methods.length) throw new Error("manifest.json has no methods");
