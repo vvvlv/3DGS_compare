@@ -1,0 +1,28 @@
+{
+  "default_left": "mcmc_150k",
+  "default_right": "mini_splat_500k",
+  "methods": [
+    {
+      "id": "mcmc_150k",
+      "label": "Splatfacto MCMC 150k (capped)",
+      "url": "splats/mcmc_150k.ply",
+      "num_gaussians": 149040,
+      "psnr": null,
+      "ssim": null,
+      "lpips": null,
+      "peak_vram_mib": null,
+      "notes": "Demo export — Gaussian budget capped for ~6GB VRAM"
+    },
+    {
+      "id": "mini_splat_500k",
+      "label": "Mini-Splatfacto 500k",
+      "url": "splats/mini_splat_500k.ply",
+      "num_gaussians": 103452,
+      "psnr": null,
+      "ssim": null,
+      "lpips": null,
+      "peak_vram_mib": null,
+      "notes": "Demo export — Mini-Splatting schedule on gsplat / Nerfstudio"
+    }
+  ]
+}
