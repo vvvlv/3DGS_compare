@@ -2,7 +2,7 @@
 
 Side-by-side / 2×2 [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) viewer for comparing trained models on the same scene.
 
-Built with [Spark](https://github.com/sparkjsdev/spark) + [Three.js](https://threejs.org/). Drop in `.ply` exports, compare methods with a locked first-person camera across all panels.
+Built with [Spark](https://github.com/sparkjsdev/spark) + [Three.js](https://threejs.org/). Compare methods with a locked first-person camera across all panels — from the manifest, or by loading a `.ply` straight from disk.
 
 ## Quick start
 
@@ -31,14 +31,21 @@ Experiments are grouped from each method’s `experiment` field (or a `[tag]` la
 Click view to pointer-lock · WASD + Space/Ctrl move (camera-relative) · Q/E roll · mouse look · Shift boost · hold RMB for fine control · Tab to exit.
 
 **Layout (custom):** single · side-by-side · 2×2 · 2×3.  
-**Load .ply:** pick a file from disk; it appears in the method dropdowns and loads into the left panel (use the dropdowns to put it in other panels).  
+**Load .ply:** open a Gaussian PLY from disk (see below).  
 **Settings:** look / move sliders (saved in `localStorage`).
 
 ## Adding your own models
 
-### Quick: Load .ply from the toolbar
+### Load .ply from disk
 
-Use **Load .ply** to open any exported Gaussian PLY without editing the manifest. The file stays in memory for this session and is selectable in every panel.
+Click **Load .ply** in the toolbar and choose a file. No manifest edit or `splats/` copy needed.
+
+- Opens the system file picker and loads into the **left** panel (camera resets to that model).
+- The file is added to every panel’s method dropdown for this browser session (in-memory only; reload clears it).
+- Assign it to other panels via those dropdowns.
+- If you were in Experiment mode, the viewer switches to Custom so the new entry stays selectable.
+
+Works with standard 3DGS / Nerfstudio / Mini-Splatting PLY exports. Orientation uses the same ground-plane heuristic as manifest models (no `up_axis` / `dataparser` metadata for ad-hoc files).
 
 ### Via manifest
 
