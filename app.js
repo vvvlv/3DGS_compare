@@ -18,6 +18,7 @@ const rightLabel = document.getElementById("right-label");
 const blLabel = document.getElementById("bl-label");
 const bcLabel = document.getElementById("bc-label");
 const brLabel = document.getElementById("br-label");
+const loadPlyInput = document.getElementById("load-ply-input");
 const resetBtn = document.getElementById("reset-cam");
 const settingsBtn = document.getElementById("settings-btn");
 const settingsPanel = document.getElementById("settings-panel");
@@ -61,7 +62,7 @@ function saveSettings() {
 
 /**
  * @typedef {{ transform: number[][], scale: number }} DataparserTransform
- * @typedef {{ id: string, label: string, url: string, num_gaussians?: number|null, psnr?: number|null, ssim?: number|null, lpips?: number|null, peak_vram_mib?: number|null, notes?: string|null, up_axis?: "opencv"|"z"|"y"|null, dataparser?: DataparserTransform|null, experiment?: string|null }} Method
+ * @typedef {{ id: string, label: string, url?: string, fileBytes?: ArrayBuffer|Uint8Array, fileName?: string, num_gaussians?: number|null, psnr?: number|null, ssim?: number|null, lpips?: number|null, peak_vram_mib?: number|null, notes?: string|null, up_axis?: "opencv"|"z"|"y"|null, dataparser?: DataparserTransform|null, experiment?: string|null }} Method
  * @typedef {{ id: string, label: string, methodIds: string[] }} Experiment
  */
 /** @type {Method[]} */
@@ -102,7 +103,7 @@ let bl;
 let bc;
 /** @type {Panel} */
 let br;
-/** @type {"single"|"dual"|"quad"|"hex"} */
+/** @type {"single"|"dual"|"triple"|"quad"|"hex"} */
 let layout = "dual";
 
 /** One GL context + one camera — scissor each panel. Guarantees pose sync. */
@@ -562,6 +563,7 @@ function realignLoadedPanels() {
 function panelSlotsForLayout(lay) {
   if (lay === "single") return [left].filter(Boolean);
   if (lay === "dual") return [left, right].filter(Boolean);
+  if (lay === "triple") return [left, tc, right].filter(Boolean);
   if (lay === "quad") return [left, right, bl, br].filter(Boolean);
   return [left, tc, right, bl, bc, br].filter(Boolean);
 }
@@ -569,6 +571,7 @@ function panelSlotsForLayout(lay) {
 function layoutForCount(n) {
   if (n <= 1) return "single";
   if (n === 2) return "dual";
+  if (n === 3) return "triple";
   if (n <= 4) return "quad";
   return "hex";
 }
@@ -623,14 +626,18 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
   const token = panel.loadAbort;
 
   panel.methodId = methodId;
-  updateOverlay(panel, method, "Loading PLY…");
+  updateOverlay(panel, method, method.fileBytes ? "Decoding PLY…" : "Loading PLY…");
   disposeSplat(panel);
 
   try {
-    const splat = new SplatMesh({
-      url: method.url,
+    /** @type {ConstructorParameters<typeof SplatMesh>[0]} */
+    const splatOpts = {
       onProgress: (ev) => {
         if (token.signal.aborted) return;
+        if (method.fileBytes) {
+          updateOverlay(panel, method, "Decoding PLY…");
+          return;
+        }
         if (ev.lengthComputable && ev.total > 0) {
           const pct = ((100 * ev.loaded) / ev.total).toFixed(0);
           updateOverlay(panel, method, `Downloading ${pct}%…`);
@@ -638,7 +645,14 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
           updateOverlay(panel, method, `Downloading ${(ev.loaded / 1e6).toFixed(1)} MB…`);
         }
       },
-    });
+    };
+    if (method.fileBytes) {
+      splatOpts.fileBytes = method.fileBytes;
+      splatOpts.fileName = method.fileName || method.label || "local.ply";
+    } else {
+      splatOpts.url = method.url;
+    }
+    const splat = new SplatMesh(splatOpts);
     panel.scene.add(splat);
     panel.splat = splat;
 
@@ -649,6 +663,7 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
       const nRaw = splat.numSplats?.value ?? splat.numSplats;
       if (typeof nRaw === "number" && method.num_gaussians == null) {
         method.num_gaussians = nRaw;
+        refreshMethodOptionLabel(methodId);
       }
     }
 
@@ -687,14 +702,23 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
 }
 
 /**
- * @param {"single"|"dual"|"quad"|"hex"} next
+ * @param {"single"|"dual"|"triple"|"quad"|"hex"} next
  * @param {{ limit?: number|null }} [opts] limit = show only first N slots (experiment)
  */
 function setMode(next, { limit = null } = {}) {
   layout =
-    next === "hex" ? "hex" : next === "quad" ? "quad" : next === "dual" ? "dual" : "single";
+    next === "hex"
+      ? "hex"
+      : next === "quad"
+        ? "quad"
+        : next === "triple"
+          ? "triple"
+          : next === "dual"
+            ? "dual"
+            : "single";
   panelLimit = limit;
   stagesEl?.classList.toggle("quad", layout === "quad");
+  stagesEl?.classList.toggle("triple", layout === "triple");
   stagesEl?.classList.toggle("hex", layout === "hex");
 
   const slots = panelSlotsForLayout(layout);
@@ -719,12 +743,21 @@ function syncToolbarVisibility() {
 
   const leftName = leftLabel?.querySelector(".sel-name");
   const rightName = rightLabel?.querySelector(".sel-name");
+  const tcName = tcLabel?.querySelector(".sel-name");
   if (leftName) {
     leftName.textContent =
-      layout === "hex" || layout === "quad" ? "TL" : layout === "single" ? "Model" : "Left";
+      layout === "hex" || layout === "quad" || layout === "triple"
+        ? "L"
+        : layout === "single"
+          ? "Model"
+          : "Left";
+  }
+  if (tcName) {
+    tcName.textContent = layout === "triple" ? "C" : "TC";
   }
   if (rightName) {
-    rightName.textContent = layout === "hex" || layout === "quad" ? "TR" : "Right";
+    rightName.textContent =
+      layout === "hex" || layout === "quad" || layout === "triple" ? "R" : "Right";
   }
 
   if (isExp) {
@@ -735,11 +768,12 @@ function syncToolbarVisibility() {
   }
 
   const showRight = layout !== "single";
+  const showTripleCenter = layout === "triple" || layout === "hex";
   const showQuadExtras = layout === "quad" || layout === "hex";
   const showHexExtras = layout === "hex";
   if (leftLabel) leftLabel.style.display = "";
   if (rightLabel) rightLabel.style.display = showRight ? "" : "none";
-  if (tcLabel) tcLabel.style.display = showHexExtras ? "" : "none";
+  if (tcLabel) tcLabel.style.display = showTripleCenter ? "" : "none";
   if (blLabel) blLabel.style.display = showQuadExtras ? "" : "none";
   if (bcLabel) bcLabel.style.display = showHexExtras ? "" : "none";
   if (brLabel) brLabel.style.display = showQuadExtras ? "" : "none";
@@ -815,16 +849,84 @@ function populateExperimentSelect(preferredId) {
   }
 }
 
+function methodSelects() {
+  return [leftSelect, tcSelect, rightSelect, blSelect, bcSelect, brSelect].filter(Boolean);
+}
+
+function methodOptionLabel(method) {
+  return `${method.label} (${formatCount(method.num_gaussians)})`;
+}
+
+function refreshMethodOptionLabel(methodId) {
+  const method = methodById.get(methodId);
+  if (!method) return;
+  const label = methodOptionLabel(method);
+  for (const sel of methodSelects()) {
+    const opt = [...sel.options].find((o) => o.value === methodId);
+    if (opt) opt.textContent = label;
+  }
+}
+
+function appendMethodToSelects(method) {
+  for (const sel of methodSelects()) {
+    const opt = document.createElement("option");
+    opt.value = method.id;
+    opt.textContent = methodOptionLabel(method);
+    sel.appendChild(opt);
+  }
+}
+
+/** Leave experiment mode without reloading panels (local PLY load will refresh left). */
+function leaveExperimentModeForLocalLoad() {
+  if (viewerMode !== "experiment") return;
+  viewerMode = "custom";
+  if (viewerModeSelect) viewerModeSelect.value = "custom";
+  panelLimit = null;
+  setMode(modeSelect?.value || layout || "dual");
+  syncToolbarVisibility();
+}
+
+async function loadLocalPlyFile(file) {
+  if (!file) return;
+  const name = file.name || "local.ply";
+  if (!/\.ply$/i.test(name)) {
+    console.warn("Expected a .ply file:", name);
+  }
+
+  leaveExperimentModeForLocalLoad();
+
+  updateOverlay(left, { label: name, num_gaussians: null }, "Reading file…");
+  const bytes = await file.arrayBuffer();
+
+  const id = `local_${Date.now()}`;
+  /** @type {Method} */
+  const method = {
+    id,
+    label: name,
+    fileBytes: bytes,
+    fileName: name,
+    num_gaussians: null,
+    notes: "Loaded from disk",
+  };
+  methods.push(method);
+  methodById.set(id, method);
+  appendMethodToSelects(method);
+  leftSelect.value = id;
+
+  referenceCenter = null;
+  referenceNativeExtent = null;
+  await loadMethod(left, id, { fitCamera: true, isReference: true });
+  realignLoadedPanels();
+}
+
 function populateSelects(manifest) {
-  const selects = [leftSelect, tcSelect, rightSelect, blSelect, bcSelect, brSelect].filter(
-    Boolean,
-  );
+  const selects = methodSelects();
   for (const sel of selects) {
     sel.innerHTML = "";
     for (const m of methods) {
       const opt = document.createElement("option");
       opt.value = m.id;
-      opt.textContent = `${m.label} (${formatCount(m.num_gaussians)})`;
+      opt.textContent = methodOptionLabel(m);
       sel.appendChild(opt);
     }
   }
@@ -848,9 +950,11 @@ function assignSelectsFromIds(ids) {
       ? [leftSelect, tcSelect, rightSelect, blSelect, bcSelect, brSelect]
       : layout === "quad"
         ? [leftSelect, rightSelect, blSelect, brSelect]
-        : layout === "dual"
-          ? [leftSelect, rightSelect]
-          : [leftSelect];
+        : layout === "triple"
+          ? [leftSelect, tcSelect, rightSelect]
+          : layout === "dual"
+            ? [leftSelect, rightSelect]
+            : [leftSelect];
   for (let i = 0; i < slotSelects.length; i++) {
     const sel = slotSelects[i];
     if (sel && ids[i] && methodById.has(ids[i])) sel.value = ids[i];
@@ -1084,7 +1188,26 @@ function bindFollowerSelect(select, panel) {
   });
 }
 
+function bindLoadPlyInput() {
+  loadPlyInput?.addEventListener("change", async () => {
+    const file = loadPlyInput.files?.[0];
+    loadPlyInput.value = "";
+    if (!file) return;
+    if (!left) {
+      console.warn("Viewer not ready yet; try again in a moment.");
+      return;
+    }
+    try {
+      await loadLocalPlyFile(file);
+    } catch (err) {
+      console.error(err);
+      updateOverlay(left, { label: file.name, num_gaussians: null }, `Failed: ${err.message || err}`, true);
+    }
+  });
+}
+
 async function main() {
+  bindLoadPlyInput();
   setupSettingsUI();
 
   const manifest = await loadMergedManifest();
@@ -1167,7 +1290,6 @@ async function main() {
     sharedCamera.quaternion.copy(defaultCamPose.quaternion);
     sharedCamera.up.set(0, 1, 0);
   });
-
   window.addEventListener("resize", resizeAll);
   resizeAll();
 

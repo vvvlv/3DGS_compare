@@ -31,9 +31,16 @@ Experiments are grouped from each method’s `experiment` field (or a `[tag]` la
 Click view to pointer-lock · WASD + Space/Ctrl move (camera-relative) · Q/E roll · mouse look · Shift boost · hold RMB for fine control · Tab to exit.
 
 **Layout (custom):** single · side-by-side · 2×2 · 2×3.  
+**Load .ply:** pick a file from disk; it appears in the method dropdowns and loads into the left panel (use the dropdowns to put it in other panels).  
 **Settings:** look / move sliders (saved in `localStorage`).
 
 ## Adding your own models
+
+### Quick: Load .ply from the toolbar
+
+Use **Load .ply** to open any exported Gaussian PLY without editing the manifest. The file stays in memory for this session and is selectable in every panel.
+
+### Via manifest
 
 1. Put Nerfstudio / 3DGS / Mini-Splatting `.ply` exports in `splats/`
 2. Edit `manifest.json`:

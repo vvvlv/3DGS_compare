@@ -37,7 +37,7 @@
       gap: 6px;
       color: var(--muted);
     }
-    #toolbar select, #toolbar button {
+    #toolbar select, #toolbar button, #toolbar label.file-btn {
       background: var(--bg);
       color: var(--text);
       border: 1px solid var(--border);
@@ -45,12 +45,23 @@
       padding: 4px 8px;
       font: inherit;
     }
-    #toolbar button {
+    #toolbar button, #toolbar label.file-btn {
       cursor: pointer;
       border-color: var(--accent);
       color: var(--accent);
     }
-    #toolbar button:hover { background: #1a2333; }
+    #toolbar button:hover, #toolbar label.file-btn:hover { background: #1a2333; }
+    #toolbar input[type="file"].sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
     #toolbar .spacer { flex: 1; }
     #toolbar .hint { color: var(--muted); font-size: 12px; }
     body {
@@ -74,6 +85,7 @@
       display: block;
     }
     #stages.quad,
+    #stages.triple,
     #stages.hex {
       display: grid;
       gap: 1px;
@@ -82,6 +94,10 @@
     #stages.quad {
       grid-template-columns: 1fr 1fr;
       grid-template-rows: 1fr 1fr;
+    }
+    #stages.triple {
+      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-rows: 1fr;
     }
     #stages.hex {
       grid-template-columns: 1fr 1fr 1fr;
@@ -98,18 +114,21 @@
       background: transparent;
     }
     /* Dual/single: only left+right are visible; kill the divider on the right panel. */
-    #stages:not(.quad):not(.hex) #stage-right { border-right: none; }
+    #stages:not(.quad):not(.triple):not(.hex) #stage-right { border-right: none; }
     #stages.quad .stage,
+    #stages.triple .stage,
     #stages.hex .stage {
       flex: unset;
       border: none;
     }
     .stage.hidden { display: none; }
+    #stages.triple .overlay,
     #stages.hex .overlay {
       padding: 6px 8px;
       font-size: 11px;
       max-width: min(260px, 94%);
     }
+    #stages.triple .overlay h2,
     #stages.hex .overlay h2 { font-size: 12px; }
     .stage canvas {
       display: block;
@@ -234,6 +253,7 @@
       <select id="mode">
         <option value="single">Single</option>
         <option value="dual" selected>Side-by-side</option>
+        <option value="triple">1×3 (3 models)</option>
         <option value="quad">2×2 (4 models)</option>
         <option value="hex">2×3 (6 models)</option>
       </select>
@@ -262,6 +282,8 @@
       <span class="sel-name">BR</span>
       <select id="br-method"></select>
     </label>
+    <label class="file-btn" for="load-ply-input">Load .ply</label>
+    <input id="load-ply-input" class="sr-only" type="file" accept=".ply,application/octet-stream" />
     <button type="button" id="reset-cam">Reset camera</button>
     <button type="button" id="settings-btn">Settings</button>
     <span class="spacer"></span>
@@ -353,6 +375,6 @@
       </div>
     </div>
   </div>
-  <script type="module" src="./app.js"></script>
+  <script type="module" src="./app.js?v=load-ply-1"></script>
 </body>
 </html>
