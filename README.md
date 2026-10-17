@@ -2,7 +2,7 @@
 
 Side-by-side / 2×2 [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) viewer for comparing trained models on the same scene.
 
-Built with [Spark](https://github.com/sparkjsdev/spark) + [Three.js](https://threejs.org/). Drop in `.ply` exports, pick 2 or 4 methods, and fly or orbit with a locked camera across all panels.
+Built with [Spark](https://github.com/sparkjsdev/spark) + [Three.js](https://threejs.org/). Drop in `.ply` exports, compare methods with a locked first-person camera across all panels.
 
 ## Quick start
 
@@ -17,15 +17,21 @@ Requires a modern browser with WebGL2. No build step — static HTML/JS served o
 
 Optional: `PORT=8080 HOST=0.0.0.0 ./serve.sh`
 
+## Modes
+
+| Mode | Behavior |
+|---|---|
+| **Experiment** | Pick an experiment (e.g. `fair5`); all of its models load and layout auto-picks (1 / 2 / ≤4 / ≤6 → single / dual / 2×2 / 2×3). |
+| **Custom** | Manually choose layout and which model goes in each panel. |
+
+Experiments are grouped from each method’s `experiment` field (or a `[tag]` label prefix). Optional manifest keys: `default_viewer_mode`, `default_experiment`, `experiments: [{ id, label, methods }]`.
+
 ## Controls
 
-| Control mode | Input |
-|---|---|
-| **First person** | Click view to pointer-lock · WASD + Space/Ctrl move (camera-relative) · Q/E roll · mouse look · Shift boost · hold RMB for fine control · Tab to exit |
-| **Orbit (antimatter)** | LMB orbit · RMB pan · wheel orbit · Ctrl+wheel dolly · Shift+wheel pan · WASD/QE rotate |
+Click view to pointer-lock · WASD + Space/Ctrl move (camera-relative) · Q/E roll · mouse look · Shift boost · hold RMB for fine control · Tab to exit.
 
-**Layout:** single · side-by-side · 2×2 · 2×3 six-model grid (shared camera).  
-**Settings:** look / move / orbit sliders (saved in `localStorage`).
+**Layout (custom):** single · side-by-side · 2×2 · 2×3.  
+**Settings:** look / move sliders (saved in `localStorage`).
 
 ## Adding your own models
 

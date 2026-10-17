@@ -219,6 +219,17 @@
 <body>
   <div id="toolbar">
     <label>
+      Mode
+      <select id="viewer-mode">
+        <option value="custom" selected>Custom</option>
+        <option value="experiment">Experiment</option>
+      </select>
+    </label>
+    <label id="experiment-label" style="display: none">
+      Experiment
+      <select id="experiment"></select>
+    </label>
+    <label id="layout-label">
       Layout
       <select id="mode">
         <option value="single">Single</option>
@@ -227,34 +238,27 @@
         <option value="hex">2×3 (6 models)</option>
       </select>
     </label>
-    <label>
-      Control
-      <select id="control-mode">
-        <option value="freecam" selected>First person</option>
-        <option value="orbit">Orbit</option>
-      </select>
-    </label>
-    <label id="left-label">
+    <label id="left-label" class="custom-only">
       <span class="sel-name">Left</span>
       <select id="left-method"></select>
     </label>
-    <label id="tc-label" style="display: none">
+    <label id="tc-label" class="custom-only" style="display: none">
       <span class="sel-name">TC</span>
       <select id="tc-method"></select>
     </label>
-    <label id="right-label">
+    <label id="right-label" class="custom-only">
       <span class="sel-name">Right</span>
       <select id="right-method"></select>
     </label>
-    <label id="bl-label" style="display: none">
+    <label id="bl-label" class="custom-only" style="display: none">
       <span class="sel-name">BL</span>
       <select id="bl-method"></select>
     </label>
-    <label id="bc-label" style="display: none">
+    <label id="bc-label" class="custom-only" style="display: none">
       <span class="sel-name">BC</span>
       <select id="bc-method"></select>
     </label>
-    <label id="br-label" style="display: none">
+    <label id="br-label" class="custom-only" style="display: none">
       <span class="sel-name">BR</span>
       <select id="br-method"></select>
     </label>
@@ -291,27 +295,16 @@
       <input id="set-roll" type="range" min="0.4" max="4" step="0.1" />
     </div>
     <div class="row">
-      <label for="set-look-fine">RMB look × (FP)</label>
+      <label for="set-look-fine">RMB look ×</label>
       <span class="val" data-for="set-look-fine">—</span>
       <input id="set-look-fine" type="range" min="0.1" max="1" step="0.05" />
-    </div>
-    <div class="row">
-      <label for="set-orbit">Orbit sensitivity</label>
-      <span class="val" data-for="set-orbit">—</span>
-      <input id="set-orbit" type="range" min="0.3" max="3" step="0.05" />
-    </div>
-    <div class="row">
-      <label for="set-orbit-d">Orbit pivot distance</label>
-      <span class="val" data-for="set-orbit-d">—</span>
-      <input id="set-orbit-d" type="range" min="0.5" max="8" step="0.1" />
     </div>
     <div class="actions">
       <button type="button" id="settings-reset">Defaults</button>
       <button type="button" id="settings-close">Close</button>
     </div>
     <p class="help">
-      <strong>First person:</strong> click to fly · WASD + Space/Ctrl · Q/E roll · RMB fine · Shift boost · Tab exit.<br/>
-      <strong>Orbit:</strong> LMB drag orbit · RMB drag pan · wheel orbit · Ctrl+wheel dolly · Shift+wheel pan · WASD/QE rotate.
+      Click to fly · WASD + Space/Ctrl · Q/E roll · RMB fine · Shift boost · Tab exit.
       Settings are saved in this browser.
     </p>
   </aside>

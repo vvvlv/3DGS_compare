@@ -1,8 +1,11 @@
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 
+const viewerModeSelect = document.getElementById("viewer-mode");
+const experimentLabel = document.getElementById("experiment-label");
+const experimentSelect = document.getElementById("experiment");
+const layoutLabel = document.getElementById("layout-label");
 const modeSelect = document.getElementById("mode");
-const controlModeSelect = document.getElementById("control-mode");
 const leftSelect = document.getElementById("left-method");
 const tcSelect = document.getElementById("tc-method");
 const rightSelect = document.getElementById("right-method");
@@ -29,7 +32,7 @@ const stageBl = document.getElementById("stage-bl");
 const stageBc = document.getElementById("stage-bc");
 const stageBr = document.getElementById("stage-br");
 
-const SETTINGS_KEY = "gs-compare-controls-v2";
+const SETTINGS_KEY = "gs-compare-controls-v3";
 const DEFAULT_SETTINGS = {
   lookSensitivity: 0.002,
   moveScale: 1.0,
@@ -37,9 +40,6 @@ const DEFAULT_SETTINGS = {
   fineMultiplier: 0.2,
   rollSpeed: 1.8,
   fineLookMultiplier: 0.35,
-  orbitSensitivity: 1.0,
-  orbitPivotDistance: 2.5,
-  controlMode: "freecam",
 };
 
 /** @type {typeof DEFAULT_SETTINGS} */
@@ -61,11 +61,19 @@ function saveSettings() {
 
 /**
  * @typedef {{ transform: number[][], scale: number }} DataparserTransform
- * @typedef {{ id: string, label: string, url: string, num_gaussians?: number|null, psnr?: number|null, ssim?: number|null, lpips?: number|null, peak_vram_mib?: number|null, notes?: string|null, up_axis?: "opencv"|"z"|"y"|null, dataparser?: DataparserTransform|null }} Method
+ * @typedef {{ id: string, label: string, url: string, num_gaussians?: number|null, psnr?: number|null, ssim?: number|null, lpips?: number|null, peak_vram_mib?: number|null, notes?: string|null, up_axis?: "opencv"|"z"|"y"|null, dataparser?: DataparserTransform|null, experiment?: string|null }} Method
+ * @typedef {{ id: string, label: string, methodIds: string[] }} Experiment
  */
 /** @type {Method[]} */
 let methods = [];
 let methodById = new Map();
+/** @type {Experiment[]} */
+let experiments = [];
+let experimentById = new Map();
+/** @type {"custom"|"experiment"} */
+let viewerMode = "custom";
+/** @type {string|null} */
+let activeExperimentId = null;
 
 /**
  * @typedef {"opencv"|"z"|"y"} UpAxis
@@ -104,8 +112,6 @@ let sharedRenderer;
 let sharedCamera;
 /** @type {FreeCam|null} */
 let freecam = null;
-/** @type {OrbitCam|null} */
-let orbit = null;
 
 /**
  * Canonical viewing size after alignment.
@@ -125,27 +131,16 @@ const _sizeTmp = new THREE.Vector3();
 const _matOrient = new THREE.Matrix4();
 const _matTmp = new THREE.Matrix4();
 const _matTmp2 = new THREE.Matrix4();
-/** @type {"freecam"|"orbit"} */
-let controlMode = settings.controlMode === "orbit" ? "orbit" : "freecam";
-
 const NEAR = 0.001;
 const FAR = 5000;
 const HINT_FREECAM =
-  "First person: click to fly · WASD · Space/Ctrl · RMB fine · Shift boost · Q/E roll · Tab exit";
+  "Click to fly · WASD · Space/Ctrl · RMB fine · Shift boost · Q/E roll · Tab exit";
 const HINT_FREECAM_LOCKED =
   "Flying · WASD · Space/Ctrl · RMB fine · Shift boost · Q/E roll · Tab to release";
-const HINT_ORBIT =
-  "Orbit: LMB orbit · RMB pan · wheel orbit · Ctrl+wheel dolly · Shift+wheel pan · WASD/QE rotate";
 
 function updateHint() {
   if (!hintEl) return;
-  if (controlMode === "orbit") {
-    hintEl.textContent = HINT_ORBIT;
-  } else if (freecam?.isLocked) {
-    hintEl.textContent = HINT_FREECAM_LOCKED;
-  } else {
-    hintEl.textContent = HINT_FREECAM;
-  }
+  hintEl.textContent = freecam?.isLocked ? HINT_FREECAM_LOCKED : HINT_FREECAM;
 }
 
 /**
@@ -200,7 +195,7 @@ class FreeCam {
     });
     // Keep context menu from stealing RMB when flying.
     domElement.addEventListener("contextmenu", (e) => {
-      if (this.isLocked || controlMode === "orbit") e.preventDefault();
+      if (this.isLocked) e.preventDefault();
     });
 
     document.addEventListener("mousemove", (event) => {
@@ -293,122 +288,6 @@ class FreeCam {
       this._wishWorld.copy(this._wishLocal).applyQuaternion(this.camera.quaternion);
       this.camera.position.addScaledVector(this._wishWorld, speed * dt);
     }
-  }
-}
-
-/**
- * Antimatter15/splat-style orbit: LMB orbits around a point in front of the
- * camera, RMB pans (strafe + dolly), wheel orbits / Ctrl dollies / Shift pans.
- * WASD/QE nudge rotations like the original viewer.
- */
-class OrbitCam {
-  /**
-   * @param {THREE.PerspectiveCamera} camera
-   * @param {HTMLElement} domElement
-   */
-  constructor(camera, domElement) {
-    this.camera = camera;
-    this.domElement = domElement;
-    this.enabled = false;
-    this.sceneScale = 1.0;
-    this._down = 0; // 0 none, 1 LMB orbit, 2 RMB pan
-    this._lastX = 0;
-    this._lastY = 0;
-    this._keys = new Set();
-
-    domElement.addEventListener("mousedown", (e) => {
-      if (!this.enabled) return;
-      e.preventDefault();
-      this._lastX = e.clientX;
-      this._lastY = e.clientY;
-      this._down = e.button === 2 || e.ctrlKey || e.metaKey ? 2 : 1;
-    });
-    domElement.addEventListener("mouseup", () => {
-      this._down = 0;
-    });
-    domElement.addEventListener("mouseleave", () => {
-      this._down = 0;
-    });
-    domElement.addEventListener("mousemove", (e) => {
-      if (!this.enabled || !this._down) return;
-      e.preventDefault();
-      const w = Math.max(domElement.clientWidth, 1);
-      const h = Math.max(domElement.clientHeight, 1);
-      const dx = (e.clientX - this._lastX) / w;
-      const dy = (e.clientY - this._lastY) / h;
-      this._lastX = e.clientX;
-      this._lastY = e.clientY;
-      const sens = settings.orbitSensitivity;
-      if (this._down === 1) {
-        this._orbit(5 * dx * sens, -5 * dy * sens);
-      } else if (this._down === 2) {
-        this._pan((-10 * dx * sens) / 1, (10 * dy * sens) / 1);
-      }
-    });
-    domElement.addEventListener(
-      "wheel",
-      (e) => {
-        if (!this.enabled) return;
-        e.preventDefault();
-        const scale = e.deltaMode === 1 ? 10 : e.deltaMode === 2 ? domElement.clientHeight : 1;
-        const sens = settings.orbitSensitivity;
-        const ndx = (-(e.deltaX * scale) / Math.max(domElement.clientWidth, 1)) * sens;
-        const ndy = ((e.deltaY * scale) / Math.max(domElement.clientHeight, 1)) * sens;
-        if (e.shiftKey) {
-          this._pan(10 * ndx, -10 * ndy);
-        } else if (e.ctrlKey || e.metaKey) {
-          this.camera.translateZ(10 * ndy * this.sceneScale * 0.15);
-        } else {
-          this._orbit(4 * ndx, 4 * ndy);
-        }
-      },
-      { passive: false },
-    );
-
-    window.addEventListener("keydown", (e) => {
-      if (!this.enabled) return;
-      this._keys.add(e.code);
-    });
-    window.addEventListener("keyup", (e) => {
-      this._keys.delete(e.code);
-    });
-  }
-
-  /** Pivot distance in world units (scaled like antimatter's d=4). */
-  _pivotD() {
-    return Math.max(0.2, settings.orbitPivotDistance * this.sceneScale * 0.35);
-  }
-
-  /** Orbit around a point `d` units in front of the camera (antimatter style). */
-  _orbit(yaw, pitch) {
-    const d = this._pivotD();
-    this.camera.translateZ(-d);
-    this.camera.rotateY(yaw);
-    this.camera.rotateX(pitch);
-    this.camera.translateZ(d);
-  }
-
-  /** Pan: local X + local Z like antimatter RMB. */
-  _pan(tx, tz) {
-    const s = this.sceneScale * 0.35;
-    this.camera.translateX(tx * s);
-    this.camera.translateZ(tz * s);
-  }
-
-  setSceneScale(extent) {
-    this.sceneScale = Math.max(extent, 0.5);
-  }
-
-  /** @param {number} dt */
-  update(dt) {
-    if (!this.enabled) return;
-    const r = 1.2 * settings.orbitSensitivity * dt * 60;
-    if (this._keys.has("KeyA")) this.camera.rotateY(0.01 * r);
-    if (this._keys.has("KeyD")) this.camera.rotateY(-0.01 * r);
-    if (this._keys.has("KeyW")) this.camera.rotateX(0.005 * r);
-    if (this._keys.has("KeyS")) this.camera.rotateX(-0.005 * r);
-    if (this._keys.has("KeyQ")) this.camera.rotateZ(0.01 * r);
-    if (this._keys.has("KeyE")) this.camera.rotateZ(-0.01 * r);
   }
 }
 
@@ -679,42 +558,34 @@ function realignLoadedPanels() {
   }
 }
 
+/** Panel order for each layout (TL→…→BR). */
+function panelSlotsForLayout(lay) {
+  if (lay === "single") return [left].filter(Boolean);
+  if (lay === "dual") return [left, right].filter(Boolean);
+  if (lay === "quad") return [left, right, bl, br].filter(Boolean);
+  return [left, tc, right, bl, bc, br].filter(Boolean);
+}
+
+function layoutForCount(n) {
+  if (n <= 1) return "single";
+  if (n === 2) return "dual";
+  if (n <= 4) return "quad";
+  return "hex";
+}
+
+/** When set (experiment mode), only the first N slots of the layout are shown. */
+/** @type {number|null} */
+let panelLimit = null;
+
 function visiblePanels() {
-  const panels = [left];
-  if (layout === "dual") panels.push(right);
-  else if (layout === "quad") panels.push(right, bl, br);
-  else if (layout === "hex") panels.push(tc, right, bl, bc, br);
-  return panels.filter(Boolean);
+  const slots = panelSlotsForLayout(layout);
+  if (panelLimit == null) return slots;
+  return slots.slice(0, Math.max(0, panelLimit));
 }
 
 function setMoveSpeedForExtent(extent) {
   const base = Math.max(0.2, extent * 0.4);
   freecam?.setMoveSpeed(base);
-  orbit?.setSceneScale(extent);
-}
-
-function setControlMode(mode) {
-  controlMode = mode === "orbit" ? "orbit" : "freecam";
-  settings.controlMode = controlMode;
-  saveSettings();
-  if (controlModeSelect) controlModeSelect.value = controlMode;
-
-  if (!freecam || !orbit || !sharedRenderer) {
-    updateHint();
-    return;
-  }
-
-  if (controlMode === "freecam") {
-    orbit.enabled = false;
-    freecam.enabled = true;
-    sharedRenderer.domElement.style.cursor = "pointer";
-  } else {
-    freecam.unlock();
-    freecam.enabled = false;
-    orbit.enabled = true;
-    sharedRenderer.domElement.style.cursor = "grab";
-  }
-  updateHint();
 }
 
 function placeCameraForScene(storeAsDefault) {
@@ -815,21 +686,36 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
   }
 }
 
-function setMode(next) {
+/**
+ * @param {"single"|"dual"|"quad"|"hex"} next
+ * @param {{ limit?: number|null }} [opts] limit = show only first N slots (experiment)
+ */
+function setMode(next, { limit = null } = {}) {
   layout =
     next === "hex" ? "hex" : next === "quad" ? "quad" : next === "dual" ? "dual" : "single";
+  panelLimit = limit;
   stagesEl?.classList.toggle("quad", layout === "quad");
   stagesEl?.classList.toggle("hex", layout === "hex");
 
-  const showRight = layout !== "single";
-  const showQuadExtras = layout === "quad" || layout === "hex";
-  const showHexExtras = layout === "hex";
+  const slots = panelSlotsForLayout(layout);
+  const n = panelLimit != null ? Math.min(panelLimit, slots.length) : slots.length;
+  const visible = new Set(slots.slice(0, n).map((p) => p.stage));
+  for (const stage of [stageLeft, stageTc, stageRight, stageBl, stageBc, stageBr]) {
+    if (!stage) continue;
+    stage.classList.toggle("hidden", !visible.has(stage));
+  }
 
-  stageRight.classList.toggle("hidden", !showRight);
-  stageTc?.classList.toggle("hidden", !showHexExtras);
-  stageBl.classList.toggle("hidden", !showQuadExtras);
-  stageBc?.classList.toggle("hidden", !showHexExtras);
-  stageBr.classList.toggle("hidden", !showQuadExtras);
+  if (modeSelect) modeSelect.value = layout;
+  syncToolbarVisibility();
+  resizeSharedRenderer();
+}
+
+function syncToolbarVisibility() {
+  const isExp = viewerMode === "experiment";
+  if (experimentLabel) {
+    experimentLabel.style.display = isExp && experiments.length ? "" : "none";
+  }
+  if (modeSelect) modeSelect.disabled = isExp;
 
   const leftName = leftLabel?.querySelector(".sel-name");
   const rightName = rightLabel?.querySelector(".sel-name");
@@ -840,17 +726,93 @@ function setMode(next) {
   if (rightName) {
     rightName.textContent = layout === "hex" || layout === "quad" ? "TR" : "Right";
   }
-  rightLabel.style.display = showRight ? "" : "none";
+
+  if (isExp) {
+    for (const el of [leftLabel, tcLabel, rightLabel, blLabel, bcLabel, brLabel]) {
+      if (el) el.style.display = "none";
+    }
+    return;
+  }
+
+  const showRight = layout !== "single";
+  const showQuadExtras = layout === "quad" || layout === "hex";
+  const showHexExtras = layout === "hex";
+  if (leftLabel) leftLabel.style.display = "";
+  if (rightLabel) rightLabel.style.display = showRight ? "" : "none";
   if (tcLabel) tcLabel.style.display = showHexExtras ? "" : "none";
   if (blLabel) blLabel.style.display = showQuadExtras ? "" : "none";
   if (bcLabel) bcLabel.style.display = showHexExtras ? "" : "none";
   if (brLabel) brLabel.style.display = showQuadExtras ? "" : "none";
-
-  resizeSharedRenderer();
 }
 
 function resizeAll() {
   resizeSharedRenderer();
+}
+
+/** Infer experiment id from explicit field or `[tag]` label prefix. */
+function experimentIdForMethod(m) {
+  if (m.experiment) return String(m.experiment);
+  const match = /^\[([^\]]+)\]/.exec(m.label || "");
+  return match?.[1]?.trim() || null;
+}
+
+/**
+ * @param {Method[]} methodsList
+ * @param {unknown} manifestExperiments
+ * @returns {Experiment[]}
+ */
+function buildExperiments(methodsList, manifestExperiments) {
+  if (Array.isArray(manifestExperiments) && manifestExperiments.length) {
+    /** @type {Experiment[]} */
+    const out = [];
+    for (const raw of manifestExperiments) {
+      if (!raw || typeof raw !== "object") continue;
+      const id = String(raw.id || "");
+      if (!id) continue;
+      const methodIds = (Array.isArray(raw.methods) ? raw.methods : [])
+        .map(String)
+        .filter((mid) => methodById.has(mid));
+      if (!methodIds.length) continue;
+      out.push({ id, label: String(raw.label || id), methodIds });
+    }
+    if (out.length) return out;
+  }
+
+  /** @type {Map<string, string[]>} */
+  const groups = new Map();
+  for (const m of methodsList) {
+    const eid = experimentIdForMethod(m);
+    if (!eid) continue;
+    if (!groups.has(eid)) groups.set(eid, []);
+    groups.get(eid).push(m.id);
+  }
+  return [...groups.entries()].map(([id, methodIds]) => ({
+    id,
+    label: id,
+    methodIds,
+  }));
+}
+
+function populateExperimentSelect(preferredId) {
+  if (!experimentSelect) return;
+  experimentSelect.innerHTML = "";
+  for (const exp of experiments) {
+    const opt = document.createElement("option");
+    opt.value = exp.id;
+    opt.textContent = `${exp.label} (${exp.methodIds.length})`;
+    experimentSelect.appendChild(opt);
+  }
+  const pick =
+    (preferredId && experimentById.has(preferredId) && preferredId) ||
+    experiments[0]?.id ||
+    "";
+  if (pick) experimentSelect.value = pick;
+  activeExperimentId = pick || null;
+
+  if (viewerModeSelect) {
+    const expOpt = viewerModeSelect.querySelector('option[value="experiment"]');
+    if (expOpt) expOpt.disabled = experiments.length === 0;
+  }
 }
 
 function populateSelects(manifest) {
@@ -877,12 +839,36 @@ function populateSelects(manifest) {
   if (bcSelect) bcSelect.value = pick(manifest.default_bc, 5);
 }
 
+/** Keep custom selects in sync when experiment loads (for switching back). */
+function assignSelectsFromIds(ids) {
+  const sels = [leftSelect, tcSelect, rightSelect, blSelect, bcSelect, brSelect];
+  // Map experiment order onto layout slots: TL TC TR BL BC BR for hex, etc.
+  const slotSelects =
+    layout === "hex"
+      ? [leftSelect, tcSelect, rightSelect, blSelect, bcSelect, brSelect]
+      : layout === "quad"
+        ? [leftSelect, rightSelect, blSelect, brSelect]
+        : layout === "dual"
+          ? [leftSelect, rightSelect]
+          : [leftSelect];
+  for (let i = 0; i < slotSelects.length; i++) {
+    const sel = slotSelects[i];
+    if (sel && ids[i] && methodById.has(ids[i])) sel.value = ids[i];
+  }
+  // Fill remaining custom selects with leftovers so they aren't stale.
+  let k = slotSelects.length;
+  for (const sel of sels) {
+    if (!sel || slotSelects.includes(sel)) continue;
+    if (ids[k] && methodById.has(ids[k])) sel.value = ids[k];
+    k++;
+  }
+}
+
 let lastFrameTime = performance.now();
 function animate(now) {
   const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
   lastFrameTime = now;
-  if (controlMode === "freecam") freecam?.update(dt);
-  else orbit?.update(dt);
+  freecam?.update(dt);
 
   const canvasW = stagesEl.clientWidth;
   const canvasH = stagesEl.clientHeight;
@@ -916,11 +902,44 @@ async function ensurePanelLoaded(panel, methodId, opts) {
   await loadMethod(panel, methodId, opts);
 }
 
-async function reloadVisible({ resetRef = false } = {}) {
+async function loadExperiment(expId, { resetRef = true } = {}) {
+  const exp = experimentById.get(expId);
+  if (!exp?.methodIds?.length) return;
+  activeExperimentId = expId;
+  if (experimentSelect) experimentSelect.value = expId;
+
+  const ids = exp.methodIds.slice(0, 6);
+  const lay = layoutForCount(ids.length);
+  setMode(lay, { limit: ids.length });
+  assignSelectsFromIds(ids);
+
   if (resetRef) {
     referenceCenter = null;
     referenceNativeExtent = null;
   }
+
+  const slots = visiblePanels();
+  await loadMethod(slots[0], ids[0], { fitCamera: true, isReference: true });
+  const tasks = [];
+  for (let i = 1; i < ids.length; i++) {
+    tasks.push(loadMethod(slots[i], ids[i], { fitCamera: false, isReference: false }));
+  }
+  await Promise.all(tasks);
+  realignLoadedPanels();
+}
+
+async function reloadVisible({ resetRef = false } = {}) {
+  if (viewerMode === "experiment") {
+    const id = activeExperimentId || experimentSelect?.value || experiments[0]?.id;
+    if (id) await loadExperiment(id, { resetRef: true });
+    return;
+  }
+
+  if (resetRef) {
+    referenceCenter = null;
+    referenceNativeExtent = null;
+  }
+  panelLimit = null;
   // TL first — its oriented bounds are the shared COLMAP frame for every panel.
   await loadMethod(left, leftSelect.value, { fitCamera: true, isReference: true });
   const tasks = [];
@@ -941,6 +960,20 @@ async function reloadVisible({ resetRef = false } = {}) {
   realignLoadedPanels();
 }
 
+async function setViewerMode(mode) {
+  viewerMode = mode === "experiment" && experiments.length ? "experiment" : "custom";
+  if (viewerModeSelect) viewerModeSelect.value = viewerMode;
+  syncToolbarVisibility();
+  if (viewerMode === "experiment") {
+    const id = experimentSelect?.value || activeExperimentId || experiments[0]?.id;
+    if (id) await loadExperiment(id, { resetRef: true });
+  } else {
+    panelLimit = null;
+    setMode(modeSelect?.value || layout || "dual");
+    await reloadVisible({ resetRef: true });
+  }
+}
+
 const SETTINGS_FIELDS = [
   { id: "set-look", key: "lookSensitivity", fmt: (v) => v.toFixed(4) },
   { id: "set-move", key: "moveScale", fmt: (v) => v.toFixed(2) },
@@ -948,8 +981,6 @@ const SETTINGS_FIELDS = [
   { id: "set-fine", key: "fineMultiplier", fmt: (v) => `${v.toFixed(2)}×` },
   { id: "set-roll", key: "rollSpeed", fmt: (v) => v.toFixed(1) },
   { id: "set-look-fine", key: "fineLookMultiplier", fmt: (v) => `${v.toFixed(2)}×` },
-  { id: "set-orbit", key: "orbitSensitivity", fmt: (v) => v.toFixed(2) },
-  { id: "set-orbit-d", key: "orbitPivotDistance", fmt: (v) => v.toFixed(1) },
 ];
 
 function syncSettingsUI() {
@@ -988,7 +1019,6 @@ function setupSettingsUI() {
     settings = { ...DEFAULT_SETTINGS };
     saveSettings();
     syncSettingsUI();
-    setControlMode(settings.controlMode);
   });
 }
 
@@ -1040,12 +1070,16 @@ async function loadMergedManifest() {
     default_br,
     default_tc,
     default_bc,
+    default_viewer_mode: local?.default_viewer_mode || base.default_viewer_mode || "custom",
+    default_experiment: local?.default_experiment || base.default_experiment || null,
+    experiments: local?.experiments || base.experiments || null,
     methods: methodsList,
   };
 }
 
 function bindFollowerSelect(select, panel) {
   select?.addEventListener("change", async () => {
+    if (viewerMode === "experiment") return;
     await loadMethod(panel, select.value, { fitCamera: false, isReference: false });
   });
 }
@@ -1058,7 +1092,11 @@ async function main() {
   methodById = new Map(methods.map((m) => [m.id, m]));
   if (!methods.length) throw new Error("manifest.json has no methods");
 
+  experiments = buildExperiments(methods, manifest.experiments);
+  experimentById = new Map(experiments.map((e) => [e.id, e]));
+
   populateSelects(manifest);
+  populateExperimentSelect(manifest.default_experiment);
 
   sharedCamera = new THREE.PerspectiveCamera(55, 1, NEAR, FAR);
   sharedCamera.position.set(0, 0.4, 2.5);
@@ -1069,7 +1107,8 @@ async function main() {
   stagesEl.insertBefore(sharedRenderer.domElement, stagesEl.firstChild);
 
   freecam = new FreeCam(sharedCamera, sharedRenderer.domElement);
-  orbit = new OrbitCam(sharedCamera, sharedRenderer.domElement);
+  freecam.enabled = true;
+  updateHint();
 
   left = createPanel(stageLeft);
   tc = createPanel(stageTc);
@@ -1080,9 +1119,17 @@ async function main() {
 
   modeSelect.value = "dual";
   setMode("dual");
-  setControlMode(controlMode);
+
+  viewerModeSelect?.addEventListener("change", async () => {
+    await setViewerMode(viewerModeSelect.value);
+  });
+  experimentSelect?.addEventListener("change", async () => {
+    if (viewerMode !== "experiment") return;
+    await loadExperiment(experimentSelect.value, { resetRef: true });
+  });
 
   modeSelect.addEventListener("change", async () => {
+    if (viewerMode === "experiment") return;
     const prev = layout;
     setMode(modeSelect.value);
     if (layout === prev || layout === "single") return;
@@ -1105,10 +1152,8 @@ async function main() {
     realignLoadedPanels();
     resizeAll();
   });
-  controlModeSelect?.addEventListener("change", () => {
-    setControlMode(controlModeSelect.value);
-  });
   leftSelect.addEventListener("change", async () => {
+    if (viewerMode === "experiment") return;
     await reloadVisible({ resetRef: true });
   });
   bindFollowerSelect(rightSelect, right);
@@ -1126,7 +1171,11 @@ async function main() {
   window.addEventListener("resize", resizeAll);
   resizeAll();
 
-  await reloadVisible({ resetRef: true });
+  const startMode =
+    manifest.default_viewer_mode === "experiment" && experiments.length
+      ? "experiment"
+      : "custom";
+  await setViewerMode(startMode);
   sharedRenderer.setAnimationLoop(animate);
 }
 
