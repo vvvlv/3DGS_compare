@@ -5,15 +5,23 @@ const modeSelect = document.getElementById("mode");
 const controlModeSelect = document.getElementById("control-mode");
 const leftSelect = document.getElementById("left-method");
 const rightSelect = document.getElementById("right-method");
+const blSelect = document.getElementById("bl-method");
+const brSelect = document.getElementById("br-method");
+const leftLabel = document.getElementById("left-label");
 const rightLabel = document.getElementById("right-label");
+const blLabel = document.getElementById("bl-label");
+const brLabel = document.getElementById("br-label");
 const resetBtn = document.getElementById("reset-cam");
 const settingsBtn = document.getElementById("settings-btn");
 const settingsPanel = document.getElementById("settings-panel");
 const settingsClose = document.getElementById("settings-close");
 const settingsReset = document.getElementById("settings-reset");
 const hintEl = document.querySelector("#toolbar .hint");
+const stagesEl = document.getElementById("stages");
 const stageLeft = document.getElementById("stage-left");
 const stageRight = document.getElementById("stage-right");
+const stageBl = document.getElementById("stage-bl");
+const stageBr = document.getElementById("stage-br");
 
 const SETTINGS_KEY = "gs-compare-controls-v2";
 const DEFAULT_SETTINGS = {
@@ -69,9 +77,16 @@ let methodById = new Map();
 let left;
 /** @type {Panel} */
 let right;
-let dual = true;
-/** Shared robust scene size used to align both panels and tune move speed. */
+/** @type {Panel} */
+let bl;
+/** @type {Panel} */
+let br;
+/** @type {"single"|"dual"|"quad"} */
+let layout = "dual";
+/** Shared robust scene size used to align panels and tune move speed. */
 let referenceExtent = null;
+/** World-space robust center from the reference model (shared by all panels). */
+let referenceCenter = null;
 let defaultCamPose = null;
 /** @type {"freecam"|"orbit"} */
 let controlMode = settings.controlMode === "orbit" ? "orbit" : "freecam";
@@ -515,21 +530,41 @@ function getRobustBounds(splat) {
 }
 
 /**
- * Put every model into the same viewing frame:
- * OpenCV→Y-up, robust-center at origin, scale so robust extent matches `targetExtent`.
+ * Put every model into a comparable viewing frame:
+ * OpenCV→Y-up, *shared* uniform scale (from the reference model), and each model's
+ * own robust center → origin.
+ *
+ * Shared COLMAP translation alone breaks when mixing exporters (official 3DGS vs
+ * Nerfstudio) that don't share the same numerical frame — panels look "out of sync"
+ * under a locked camera. Own-center + shared scale keeps orbit/freecam matched.
  */
-function alignSplatToFrame(splat, targetExtent) {
+function alignSplatToFrame(splat, _frameCenter, frameExtent, targetExtent) {
   splat.position.set(0, 0, 0);
   splat.scale.setScalar(1);
-  splat.quaternion.set(1, 0, 0, 0);
+  splat.quaternion.set(1, 0, 0, 0); // OpenCV / COLMAP → Y-up
   splat.updateMatrixWorld(true);
 
-  const { center, extent } = getRobustBounds(splat);
-  const s = targetExtent / extent;
+  const own = getRobustBounds(splat);
+  const s = targetExtent / Math.max(frameExtent, 1e-6);
   splat.scale.setScalar(s);
-  splat.position.copy(center).multiplyScalar(-s);
+  splat.position.copy(own.center).multiplyScalar(-s);
   splat.updateMatrixWorld(true);
-  return extent;
+}
+
+/** Re-apply the shared scale / per-model recenter (e.g. after TL changes). */
+function realignLoadedPanels() {
+  if (referenceExtent == null) return;
+  for (const panel of visiblePanels()) {
+    if (!panel.splat) continue;
+    alignSplatToFrame(panel.splat, referenceCenter, referenceExtent, referenceExtent);
+  }
+}
+
+function visiblePanels() {
+  const panels = [left];
+  if (layout !== "single") panels.push(right);
+  if (layout === "quad") panels.push(bl, br);
+  return panels.filter(Boolean);
 }
 
 function setMoveSpeedForExtent(extent) {
@@ -580,14 +615,33 @@ function placeCameraForScene(panel, extent, storeAsDefault) {
   }
 }
 
-function syncRightFromLeft() {
-  if (!dual) return;
-  right.camera.position.copy(left.camera.position);
-  right.camera.quaternion.copy(left.camera.quaternion);
-  right.camera.up.copy(left.camera.up);
-  right.camera.near = left.camera.near;
-  right.camera.far = left.camera.far;
-  right.camera.updateProjectionMatrix();
+/** Follower panels that mirror the control (TL / left) camera. */
+function followerPanels() {
+  if (layout === "quad") return [right, bl, br];
+  if (layout === "dual") return [right];
+  return [];
+}
+
+/** Copy control (TL/left) pose into a panel camera; aspect set by caller/resize. */
+function copyPoseFromLeft(panel) {
+  if (!left || !panel || panel === left) return;
+  panel.camera.position.copy(left.camera.position);
+  panel.camera.quaternion.copy(left.camera.quaternion);
+  panel.camera.up.copy(left.camera.up);
+  panel.camera.fov = left.camera.fov;
+  panel.camera.near = left.camera.near;
+  panel.camera.far = left.camera.far;
+}
+
+function syncFollowersFromLeft() {
+  if (!left) return;
+  left.camera.updateMatrixWorld(true);
+  for (const panel of followerPanels()) {
+    copyPoseFromLeft(panel);
+    panel.camera.aspect = left.camera.aspect;
+    panel.camera.updateProjectionMatrix();
+    panel.camera.updateMatrixWorld(true);
+  }
 }
 
 async function loadMethod(panel, methodId, { fitCamera = false, isReference = false } = {}) {
@@ -631,17 +685,22 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
       }
     }
 
+    // OpenCV→Y-up, then measure native bounds in that orientation.
     splat.position.set(0, 0, 0);
     splat.scale.setScalar(1);
     splat.quaternion.set(1, 0, 0, 0);
     splat.updateMatrixWorld(true);
-    const nativeExtent = getRobustBounds(splat).extent;
-    panel.extent = nativeExtent;
+    const bounds = getRobustBounds(splat);
+    panel.extent = bounds.extent;
 
-    if (isReference || referenceExtent == null) {
-      referenceExtent = nativeExtent;
+    if (isReference || referenceExtent == null || referenceCenter == null) {
+      referenceExtent = bounds.extent;
+      referenceCenter = bounds.center.clone();
+      // Reference changed: keep other loaded panels in the same world frame.
+      realignLoadedPanels();
     }
-    alignSplatToFrame(splat, referenceExtent);
+
+    alignSplatToFrame(splat, referenceCenter, referenceExtent, referenceExtent);
     setMoveSpeedForExtent(referenceExtent);
 
     updateOverlay(panel, method, "");
@@ -654,20 +713,37 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
 }
 
 function setMode(next) {
-  dual = next === "dual";
-  stageRight.classList.toggle("hidden", !dual);
-  rightLabel.style.display = dual ? "" : "none";
+  layout = next === "quad" ? "quad" : next === "dual" ? "dual" : "single";
+  stagesEl?.classList.toggle("quad", layout === "quad");
+
+  stageRight.classList.toggle("hidden", layout === "single");
+  stageBl.classList.toggle("hidden", layout !== "quad");
+  stageBr.classList.toggle("hidden", layout !== "quad");
+
+  const leftName = leftLabel?.querySelector(".sel-name");
+  const rightName = rightLabel?.querySelector(".sel-name");
+  if (leftName) {
+    leftName.textContent = layout === "quad" ? "TL" : layout === "single" ? "Model" : "Left";
+  }
+  if (rightName) {
+    rightName.textContent = layout === "quad" ? "TR" : "Right";
+  }
+  rightLabel.style.display = layout === "single" ? "none" : "";
+  if (blLabel) blLabel.style.display = layout === "quad" ? "" : "none";
+  if (brLabel) brLabel.style.display = layout === "quad" ? "" : "none";
+
   resizeAll();
-  if (dual) syncRightFromLeft();
+  syncFollowersFromLeft();
 }
 
 function resizeAll() {
   resizePanel(left);
-  if (dual) resizePanel(right);
+  for (const panel of followerPanels()) resizePanel(panel);
 }
 
 function populateSelects(manifest) {
-  for (const sel of [leftSelect, rightSelect]) {
+  const selects = [leftSelect, rightSelect, blSelect, brSelect].filter(Boolean);
+  for (const sel of selects) {
     sel.innerHTML = "";
     for (const m of methods) {
       const opt = document.createElement("option");
@@ -676,12 +752,13 @@ function populateSelects(manifest) {
       sel.appendChild(opt);
     }
   }
-  leftSelect.value = methodById.has(manifest.default_left)
-    ? manifest.default_left
-    : methods[0]?.id;
-  rightSelect.value = methodById.has(manifest.default_right)
-    ? manifest.default_right
-    : methods[1]?.id || methods[0]?.id;
+  const pick = (id, fallbackIndex) =>
+    methodById.has(id) ? id : methods[fallbackIndex]?.id || methods[0]?.id;
+
+  leftSelect.value = pick(manifest.default_left, 0);
+  rightSelect.value = pick(manifest.default_right, 1);
+  if (blSelect) blSelect.value = pick(manifest.default_bl, 2);
+  if (brSelect) brSelect.value = pick(manifest.default_br, 3);
 }
 
 let lastFrameTime = performance.now();
@@ -690,18 +767,47 @@ function animate(now) {
   lastFrameTime = now;
   if (controlMode === "freecam") left.freecam?.update(dt);
   else left.orbit?.update(dt);
-  if (dual) syncRightFromLeft();
-  left.renderer.render(left.scene, left.camera);
-  if (dual) right.renderer.render(right.scene, right.camera);
+
+  // Per-panel cameras, pose copied every frame. Sharing one Camera across multiple
+  // WebGLRenderers/Spark paths can drift; mutating aspect on a shared cam is worse.
+  left.camera.updateMatrixWorld(true);
+
+  for (const panel of visiblePanels()) {
+    const w = panel.stage.clientWidth;
+    const h = panel.stage.clientHeight;
+    if (w < 1 || h < 1) continue;
+
+    if (panel !== left) copyPoseFromLeft(panel);
+    panel.camera.aspect = w / h;
+    panel.camera.updateProjectionMatrix();
+    panel.camera.updateMatrixWorld(true);
+    panel.splat?.updateMatrixWorld?.(true);
+    panel.renderer.render(panel.scene, panel.camera);
+  }
 }
 
-async function reloadPair({ resetRef = false } = {}) {
-  if (resetRef) referenceExtent = null;
-  await loadMethod(left, leftSelect.value, { fitCamera: true, isReference: true });
-  if (dual) {
-    await loadMethod(right, rightSelect.value, { fitCamera: false, isReference: false });
-    syncRightFromLeft();
+async function ensurePanelLoaded(panel, methodId, opts) {
+  if (panel.methodId === methodId && panel.splat) return;
+  await loadMethod(panel, methodId, opts);
+}
+
+async function reloadVisible({ resetRef = false } = {}) {
+  if (resetRef) {
+    referenceExtent = null;
+    referenceCenter = null;
   }
+  await loadMethod(left, leftSelect.value, { fitCamera: true, isReference: true });
+  const tasks = [];
+  if (layout !== "single") {
+    tasks.push(loadMethod(right, rightSelect.value, { fitCamera: false, isReference: false }));
+  }
+  if (layout === "quad") {
+    tasks.push(loadMethod(bl, blSelect.value, { fitCamera: false, isReference: false }));
+    tasks.push(loadMethod(br, brSelect.value, { fitCamera: false, isReference: false }));
+  }
+  await Promise.all(tasks);
+  realignLoadedPanels();
+  syncFollowersFromLeft();
 }
 
 const SETTINGS_FIELDS = [
@@ -775,17 +881,18 @@ async function loadMergedManifest() {
 
   const methodsList = [...byId.values()];
   // Prefer local defaults when they resolve to a known method
-  const default_left =
-    (local?.default_left && byId.has(local.default_left) && local.default_left) ||
-    base.default_left ||
-    methodsList[0]?.id;
-  const default_right =
-    (local?.default_right && byId.has(local.default_right) && local.default_right) ||
-    base.default_right ||
-    methodsList[1]?.id ||
-    default_left;
+  const pickDefault = (localKey, baseKey, fallbackIndex, fallbackId) =>
+    (local?.[localKey] && byId.has(local[localKey]) && local[localKey]) ||
+    (base[baseKey] && byId.has(base[baseKey]) && base[baseKey]) ||
+    methodsList[fallbackIndex]?.id ||
+    fallbackId;
 
-  return { default_left, default_right, methods: methodsList };
+  const default_left = pickDefault("default_left", "default_left", 0, methodsList[0]?.id);
+  const default_right = pickDefault("default_right", "default_right", 1, default_left);
+  const default_bl = pickDefault("default_bl", "default_bl", 2, default_left);
+  const default_br = pickDefault("default_br", "default_br", 3, default_right);
+
+  return { default_left, default_right, default_bl, default_br, methods: methodsList };
 }
 
 async function main() {
@@ -800,34 +907,64 @@ async function main() {
 
   left = createPanel(stageLeft, true);
   right = createPanel(stageRight, false);
+  bl = createPanel(stageBl, false);
+  br = createPanel(stageBr, false);
 
   modeSelect.value = "dual";
   setMode("dual");
   setControlMode(controlMode);
 
-  modeSelect.addEventListener("change", () => setMode(modeSelect.value));
+  modeSelect.addEventListener("change", async () => {
+    const prev = layout;
+    setMode(modeSelect.value);
+    if (layout === prev) return;
+    // Load any newly visible panels; skip full reload when possible.
+    if (layout === "single") return;
+    const tasks = [];
+    if (prev === "single" || (layout === "quad" && prev === "dual")) {
+      // dual←single or quad←dual/single: ensure newly shown panels
+      if (prev === "single") {
+        tasks.push(ensurePanelLoaded(right, rightSelect.value, { fitCamera: false }));
+      }
+      if (layout === "quad") {
+        tasks.push(ensurePanelLoaded(bl, blSelect.value, { fitCamera: false }));
+        tasks.push(ensurePanelLoaded(br, brSelect.value, { fitCamera: false }));
+      }
+    }
+    await Promise.all(tasks);
+    syncFollowersFromLeft();
+    resizeAll();
+  });
   controlModeSelect?.addEventListener("change", () => {
     setControlMode(controlModeSelect.value);
   });
   leftSelect.addEventListener("change", async () => {
-    await reloadPair({ resetRef: true });
+    await reloadVisible({ resetRef: true });
   });
   rightSelect.addEventListener("change", async () => {
     await loadMethod(right, rightSelect.value, { fitCamera: false, isReference: false });
-    syncRightFromLeft();
+    syncFollowersFromLeft();
+  });
+  blSelect?.addEventListener("change", async () => {
+    await loadMethod(bl, blSelect.value, { fitCamera: false, isReference: false });
+    syncFollowersFromLeft();
+  });
+  brSelect?.addEventListener("change", async () => {
+    await loadMethod(br, brSelect.value, { fitCamera: false, isReference: false });
+    syncFollowersFromLeft();
   });
   resetBtn.addEventListener("click", () => {
     if (!defaultCamPose) return;
     left.camera.position.copy(defaultCamPose.position);
     left.camera.quaternion.copy(defaultCamPose.quaternion);
     left.camera.up.set(0, 1, 0);
-    syncRightFromLeft();
+    syncFollowersFromLeft();
   });
 
   window.addEventListener("resize", resizeAll);
   resizeAll();
 
-  await reloadPair({ resetRef: true });
+  await reloadVisible({ resetRef: true });
   left.renderer.setAnimationLoop(animate);
 }
 

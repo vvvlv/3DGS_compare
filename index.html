@@ -53,19 +53,37 @@
     #toolbar button:hover { background: #1a2333; }
     #toolbar .spacer { flex: 1; }
     #toolbar .hint { color: var(--muted); font-size: 12px; }
+    body {
+      display: flex;
+      flex-direction: column;
+    }
     #stages {
       display: flex;
-      height: calc(100% - 42px);
+      flex: 1;
       min-height: 0;
+    }
+    #stages.quad {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
     }
     .stage {
       position: relative;
       flex: 1;
       min-width: 0;
+      min-height: 0;
       border-right: 1px solid var(--border);
       background: #000;
     }
-    .stage:last-child { border-right: none; }
+    /* Dual/single: only left+right are visible; kill the divider on the right panel. */
+    #stages:not(.quad) #stage-right { border-right: none; }
+    #stages.quad .stage {
+      flex: unset;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+    }
+    #stages.quad .stage:nth-child(2n) { border-right: none; }
+    #stages.quad .stage:nth-child(n + 3) { border-bottom: none; }
     .stage.hidden { display: none; }
     .stage canvas {
       display: block;
@@ -179,6 +197,7 @@
       <select id="mode">
         <option value="single">Single</option>
         <option value="dual" selected>Side-by-side</option>
+        <option value="quad">2×2 (4 models)</option>
       </select>
     </label>
     <label>
@@ -188,13 +207,21 @@
         <option value="orbit">Orbit</option>
       </select>
     </label>
-    <label>
-      Left
+    <label id="left-label">
+      <span class="sel-name">Left</span>
       <select id="left-method"></select>
     </label>
     <label id="right-label">
-      Right
+      <span class="sel-name">Right</span>
       <select id="right-method"></select>
+    </label>
+    <label id="bl-label" style="display: none">
+      <span class="sel-name">BL</span>
+      <select id="bl-method"></select>
+    </label>
+    <label id="br-label" style="display: none">
+      <span class="sel-name">BR</span>
+      <select id="br-method"></select>
     </label>
     <button type="button" id="reset-cam">Reset camera</button>
     <button type="button" id="settings-btn">Settings</button>
@@ -263,6 +290,20 @@
     </div>
     <div class="stage" id="stage-right">
       <div class="overlay" id="overlay-right">
+        <h2>—</h2>
+        <div class="meta"></div>
+        <div class="status">Loading…</div>
+      </div>
+    </div>
+    <div class="stage hidden" id="stage-bl">
+      <div class="overlay" id="overlay-bl">
+        <h2>—</h2>
+        <div class="meta"></div>
+        <div class="status">Loading…</div>
+      </div>
+    </div>
+    <div class="stage hidden" id="stage-br">
+      <div class="overlay" id="overlay-br">
         <h2>—</h2>
         <div class="meta"></div>
         <div class="status">Loading…</div>

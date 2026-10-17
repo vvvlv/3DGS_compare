@@ -1,8 +1,8 @@
 # 3DGS Compare
 
-Side-by-side [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) viewer for comparing trained models on the same scene.
+Side-by-side / 2×2 [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) viewer for comparing trained models on the same scene.
 
-Built with [Spark](https://github.com/sparkjsdev/spark) + [Three.js](https://threejs.org/). Drop in `.ply` exports, pick two methods, and fly or orbit with a locked camera across both panels.
+Built with [Spark](https://github.com/sparkjsdev/spark) + [Three.js](https://threejs.org/). Drop in `.ply` exports, pick 2 or 4 methods, and fly or orbit with a locked camera across all panels.
 
 ## Quick start
 
@@ -24,7 +24,7 @@ Optional: `PORT=8080 HOST=0.0.0.0 ./serve.sh`
 | **First person** | Click view to pointer-lock · WASD + Space/Ctrl move (camera-relative) · Q/E roll · mouse look · Shift boost · hold RMB for fine control · Tab to exit |
 | **Orbit (antimatter)** | LMB orbit · RMB pan · wheel orbit · Ctrl+wheel dolly · Shift+wheel pan · WASD/QE rotate |
 
-**Layout:** single panel or side-by-side (shared camera).  
+**Layout:** single · side-by-side · 2×2 four-model grid (shared camera).  
 **Settings:** look / move / orbit sliders (saved in `localStorage`).
 
 ## Adding your own models
@@ -36,6 +36,8 @@ Optional: `PORT=8080 HOST=0.0.0.0 ./serve.sh`
 {
   "default_left": "my_a",
   "default_right": "my_b",
+  "default_bl": "my_c",
+  "default_br": "my_d",
   "methods": [
     {
       "id": "my_a",
@@ -52,7 +54,7 @@ Optional: `PORT=8080 HOST=0.0.0.0 ./serve.sh`
 }
 ```
 
-Metrics fields may be `null`. On load, each model is auto-aligned into a shared robust frame (Y-up, percentile-trimmed center/scale) so side-by-side comparison stays readable even when floaters differ.
+Metrics fields may be `null`. On load, models share one frame from the TL/left reference (OpenCV→Y-up, same translation/scale) so same-scene COLMAP exports stay locked together; cameras are also driven from that panel.
 
 Reload the page after editing the manifest.
 
