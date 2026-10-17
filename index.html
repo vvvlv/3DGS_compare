@@ -58,13 +58,33 @@
       flex-direction: column;
     }
     #stages {
+      position: relative;
       display: flex;
       flex: 1;
       min-height: 0;
+      background: #000;
+    }
+    /* One shared WebGL canvas behind the grid (perfect camera sync, one GL context). */
+    #stages > canvas.spark-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100% !important;
+      height: 100% !important;
+      z-index: 0;
+      display: block;
+    }
+    #stages.quad,
+    #stages.hex {
+      display: grid;
+      gap: 1px;
+      background: var(--border);
     }
     #stages.quad {
-      display: grid;
       grid-template-columns: 1fr 1fr;
+      grid-template-rows: 1fr 1fr;
+    }
+    #stages.hex {
+      grid-template-columns: 1fr 1fr 1fr;
       grid-template-rows: 1fr 1fr;
     }
     .stage {
@@ -72,19 +92,25 @@
       flex: 1;
       min-width: 0;
       min-height: 0;
+      z-index: 1;
+      pointer-events: none;
       border-right: 1px solid var(--border);
-      background: #000;
+      background: transparent;
     }
     /* Dual/single: only left+right are visible; kill the divider on the right panel. */
-    #stages:not(.quad) #stage-right { border-right: none; }
-    #stages.quad .stage {
+    #stages:not(.quad):not(.hex) #stage-right { border-right: none; }
+    #stages.quad .stage,
+    #stages.hex .stage {
       flex: unset;
-      border-right: 1px solid var(--border);
-      border-bottom: 1px solid var(--border);
+      border: none;
     }
-    #stages.quad .stage:nth-child(2n) { border-right: none; }
-    #stages.quad .stage:nth-child(n + 3) { border-bottom: none; }
     .stage.hidden { display: none; }
+    #stages.hex .overlay {
+      padding: 6px 8px;
+      font-size: 11px;
+      max-width: min(260px, 94%);
+    }
+    #stages.hex .overlay h2 { font-size: 12px; }
     .stage canvas {
       display: block;
       width: 100%;
@@ -198,6 +224,7 @@
         <option value="single">Single</option>
         <option value="dual" selected>Side-by-side</option>
         <option value="quad">2×2 (4 models)</option>
+        <option value="hex">2×3 (6 models)</option>
       </select>
     </label>
     <label>
@@ -211,6 +238,10 @@
       <span class="sel-name">Left</span>
       <select id="left-method"></select>
     </label>
+    <label id="tc-label" style="display: none">
+      <span class="sel-name">TC</span>
+      <select id="tc-method"></select>
+    </label>
     <label id="right-label">
       <span class="sel-name">Right</span>
       <select id="right-method"></select>
@@ -218,6 +249,10 @@
     <label id="bl-label" style="display: none">
       <span class="sel-name">BL</span>
       <select id="bl-method"></select>
+    </label>
+    <label id="bc-label" style="display: none">
+      <span class="sel-name">BC</span>
+      <select id="bc-method"></select>
     </label>
     <label id="br-label" style="display: none">
       <span class="sel-name">BR</span>
@@ -281,8 +316,16 @@
     </p>
   </aside>
   <div id="stages">
+    <!-- Grid order: TL TC TR / BL BC BR (hidden stages drop out of flex/grid). -->
     <div class="stage" id="stage-left">
       <div class="overlay" id="overlay-left">
+        <h2>—</h2>
+        <div class="meta"></div>
+        <div class="status">Loading…</div>
+      </div>
+    </div>
+    <div class="stage hidden" id="stage-tc">
+      <div class="overlay" id="overlay-tc">
         <h2>—</h2>
         <div class="meta"></div>
         <div class="status">Loading…</div>
@@ -297,6 +340,13 @@
     </div>
     <div class="stage hidden" id="stage-bl">
       <div class="overlay" id="overlay-bl">
+        <h2>—</h2>
+        <div class="meta"></div>
+        <div class="status">Loading…</div>
+      </div>
+    </div>
+    <div class="stage hidden" id="stage-bc">
+      <div class="overlay" id="overlay-bc">
         <h2>—</h2>
         <div class="meta"></div>
         <div class="status">Loading…</div>

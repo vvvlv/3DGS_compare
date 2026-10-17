@@ -24,7 +24,7 @@ Optional: `PORT=8080 HOST=0.0.0.0 ./serve.sh`
 | **First person** | Click view to pointer-lock · WASD + Space/Ctrl move (camera-relative) · Q/E roll · mouse look · Shift boost · hold RMB for fine control · Tab to exit |
 | **Orbit (antimatter)** | LMB orbit · RMB pan · wheel orbit · Ctrl+wheel dolly · Shift+wheel pan · WASD/QE rotate |
 
-**Layout:** single · side-by-side · 2×2 four-model grid (shared camera).  
+**Layout:** single · side-by-side · 2×2 · 2×3 six-model grid (shared camera).  
 **Settings:** look / move / orbit sliders (saved in `localStorage`).
 
 ## Adding your own models
@@ -35,8 +35,10 @@ Optional: `PORT=8080 HOST=0.0.0.0 ./serve.sh`
 ```json
 {
   "default_left": "my_a",
+  "default_tc": "my_e",
   "default_right": "my_b",
   "default_bl": "my_c",
+  "default_bc": "my_f",
   "default_br": "my_d",
   "methods": [
     {
@@ -54,15 +56,16 @@ Optional: `PORT=8080 HOST=0.0.0.0 ./serve.sh`
 }
 ```
 
-Metrics fields may be `null`. On load, models share one frame from the TL/left reference (OpenCV→Y-up, same translation/scale) so same-scene COLMAP exports stay locked together; cameras are also driven from that panel.
+Metrics fields may be `null`. On load, each PLY is oriented (manifest `up_axis` or ground-plane heuristic). Same-convention exports (e.g. all OpenCV) share TL/left’s COLMAP frame; Nerfstudio Z-up is fit to the same view size on its own bounds. One WebGL canvas + camera keeps the viewpoint identical.
 
 Reload the page after editing the manifest.
 
 ### Local overlay (optional)
 
 For machine-local / pipeline results without dirtying git, add `manifest.local.json`
-(gitignored). The viewer merges it on top of `manifest.json`. The training pipeline
-writes this file automatically and symlinks `splats/bench_*.ply`.
+(gitignored). By default it merges on top of `manifest.json`; set `"replace_methods": true`
+to show only the local list (hides public demos). The training pipeline writes this file
+and symlinks `splats/bench_*.ply` / `splats/fair5_*.ply`.
 
 ## Demo assets
 

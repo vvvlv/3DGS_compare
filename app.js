@@ -4,12 +4,16 @@ import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
 const modeSelect = document.getElementById("mode");
 const controlModeSelect = document.getElementById("control-mode");
 const leftSelect = document.getElementById("left-method");
+const tcSelect = document.getElementById("tc-method");
 const rightSelect = document.getElementById("right-method");
 const blSelect = document.getElementById("bl-method");
+const bcSelect = document.getElementById("bc-method");
 const brSelect = document.getElementById("br-method");
 const leftLabel = document.getElementById("left-label");
+const tcLabel = document.getElementById("tc-label");
 const rightLabel = document.getElementById("right-label");
 const blLabel = document.getElementById("bl-label");
+const bcLabel = document.getElementById("bc-label");
 const brLabel = document.getElementById("br-label");
 const resetBtn = document.getElementById("reset-cam");
 const settingsBtn = document.getElementById("settings-btn");
@@ -19,8 +23,10 @@ const settingsReset = document.getElementById("settings-reset");
 const hintEl = document.querySelector("#toolbar .hint");
 const stagesEl = document.getElementById("stages");
 const stageLeft = document.getElementById("stage-left");
+const stageTc = document.getElementById("stage-tc");
 const stageRight = document.getElementById("stage-right");
 const stageBl = document.getElementById("stage-bl");
+const stageBc = document.getElementById("stage-bc");
 const stageBr = document.getElementById("stage-br");
 
 const SETTINGS_KEY = "gs-compare-controls-v2";
@@ -53,41 +59,72 @@ function saveSettings() {
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
 
-/** @type {{ id: string, label: string, url: string, num_gaussians?: number|null, psnr?: number|null, ssim?: number|null, lpips?: number|null, peak_vram_mib?: number|null, notes?: string|null }[]} */
+/**
+ * @typedef {{ transform: number[][], scale: number }} DataparserTransform
+ * @typedef {{ id: string, label: string, url: string, num_gaussians?: number|null, psnr?: number|null, ssim?: number|null, lpips?: number|null, peak_vram_mib?: number|null, notes?: string|null, up_axis?: "opencv"|"z"|"y"|null, dataparser?: DataparserTransform|null }} Method
+ */
+/** @type {Method[]} */
 let methods = [];
 let methodById = new Map();
 
 /**
+ * @typedef {"opencv"|"z"|"y"} UpAxis
  * @typedef {object} Panel
  * @property {HTMLElement} stage
  * @property {HTMLElement} overlay
  * @property {THREE.Scene} scene
- * @property {THREE.PerspectiveCamera} camera
- * @property {THREE.WebGLRenderer} renderer
  * @property {SparkRenderer} spark
- * @property {FreeCam|null} freecam
- * @property {OrbitCam|null} orbit
  * @property {SplatMesh|null} splat
  * @property {string|null} methodId
  * @property {AbortController|null} loadAbort
  * @property {number|null} extent
+ * @property {UpAxis|null} upAxis
+ * @property {DataparserTransform|null} dataparser
  */
 
 /** @type {Panel} */
 let left;
 /** @type {Panel} */
+let tc;
+/** @type {Panel} */
 let right;
 /** @type {Panel} */
 let bl;
 /** @type {Panel} */
+let bc;
+/** @type {Panel} */
 let br;
-/** @type {"single"|"dual"|"quad"} */
+/** @type {"single"|"dual"|"quad"|"hex"} */
 let layout = "dual";
-/** Shared robust scene size used to align panels and tune move speed. */
-let referenceExtent = null;
-/** World-space robust center from the reference model (shared by all panels). */
+
+/** One GL context + one camera — scissor each panel. Guarantees pose sync. */
+/** @type {THREE.WebGLRenderer} */
+let sharedRenderer;
+/** @type {THREE.PerspectiveCamera} */
+let sharedCamera;
+/** @type {FreeCam|null} */
+let freecam = null;
+/** @type {OrbitCam|null} */
+let orbit = null;
+
+/**
+ * Canonical viewing size after alignment.
+ *
+ * All panels share TL’s COLMAP frame after orientation:
+ * - Official CUDA PLYs: OpenCV → Y-up (180° X)
+ * - Nerfstudio PLYs with `dataparser`: inverse NS transform → COLMAP, then same 180° X
+ * - Bare Z-up (no dataparser): −90° X only (own-fit fallback)
+ */
+const VIEW_EXTENT = 10;
+/** @type {THREE.Vector3|null} */
 let referenceCenter = null;
+/** @type {number|null} */
+let referenceNativeExtent = null;
 let defaultCamPose = null;
+const _sizeTmp = new THREE.Vector3();
+const _matOrient = new THREE.Matrix4();
+const _matTmp = new THREE.Matrix4();
+const _matTmp2 = new THREE.Matrix4();
 /** @type {"freecam"|"orbit"} */
 let controlMode = settings.controlMode === "orbit" ? "orbit" : "freecam";
 
@@ -104,7 +141,7 @@ function updateHint() {
   if (!hintEl) return;
   if (controlMode === "orbit") {
     hintEl.textContent = HINT_ORBIT;
-  } else if (left?.freecam?.isLocked) {
+  } else if (freecam?.isLocked) {
     hintEl.textContent = HINT_FREECAM_LOCKED;
   } else {
     hintEl.textContent = HINT_FREECAM;
@@ -405,60 +442,56 @@ function updateOverlay(panel, method, statusText, isError = false) {
   status.style.display = statusText ? "block" : "none";
 }
 
-function createPanel(stageEl, withControls) {
+function createPanel(stageEl) {
   const overlay = stageEl.querySelector(".overlay");
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x000000);
-
-  const camera = new THREE.PerspectiveCamera(55, 1, NEAR, FAR);
-  camera.position.set(0, 0.4, 2.5);
-
-  const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-  stageEl.appendChild(renderer.domElement);
+  // Transparent — the shared canvas clears to black behind the grid.
+  scene.background = null;
 
   const spark = new SparkRenderer({
-    renderer,
+    renderer: sharedRenderer,
     minPixelRadius: 0.0,
     maxPixelRadius: 512.0,
     clipXY: 1.4,
   });
   scene.add(spark);
 
-  /** @type {FreeCam|null} */
-  let freecam = null;
-  /** @type {OrbitCam|null} */
-  let orbit = null;
-  if (withControls) {
-    freecam = new FreeCam(camera, renderer.domElement);
-    orbit = new OrbitCam(camera, renderer.domElement);
-  }
-
   return {
     stage: stageEl,
     overlay,
     scene,
-    camera,
-    renderer,
     spark,
-    freecam,
-    orbit,
     splat: null,
     methodId: null,
     loadAbort: null,
     extent: null,
+    upAxis: null,
+    dataparser: null,
   };
 }
 
-function resizePanel(panel) {
-  const w = panel.stage.clientWidth;
-  const h = panel.stage.clientHeight;
+function resizeSharedRenderer() {
+  if (!sharedRenderer || !stagesEl) return;
+  const w = stagesEl.clientWidth;
+  const h = stagesEl.clientHeight;
   if (w < 1 || h < 1) return;
-  panel.camera.aspect = w / h;
-  panel.camera.near = NEAR;
-  panel.camera.far = FAR;
-  panel.camera.updateProjectionMatrix();
-  panel.renderer.setSize(w, h, false);
+  sharedRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+  sharedRenderer.setSize(w, h, false);
+  sharedCamera.near = NEAR;
+  sharedCamera.far = FAR;
+  sharedCamera.updateProjectionMatrix();
+}
+
+/** Stage rect in CSS pixels relative to #stages (WebGL Y flipped by caller). */
+function stageRect(stageEl) {
+  const root = stagesEl.getBoundingClientRect();
+  const r = stageEl.getBoundingClientRect();
+  return {
+    x: r.left - root.left,
+    y: r.top - root.top,
+    w: r.width,
+    h: r.height,
+  };
 }
 
 function disposeSplat(panel) {
@@ -507,9 +540,10 @@ function getRobustBounds(splat) {
       const f = t - lo;
       return a[lo] * (1 - f) + a[Math.min(lo + 1, a.length - 1)] * f;
     };
+    // Tighter trim than 5–95: heavy floater tails still biased MS vs NS framing.
     localBox = new THREE.Box3(
-      new THREE.Vector3(pct(xs, 0.05), pct(ys, 0.05), pct(zs, 0.05)),
-      new THREE.Vector3(pct(xs, 0.95), pct(ys, 0.95), pct(zs, 0.95)),
+      new THREE.Vector3(pct(xs, 0.1), pct(ys, 0.1), pct(zs, 0.1)),
+      new THREE.Vector3(pct(xs, 0.9), pct(ys, 0.9), pct(zs, 0.9)),
     );
   } else if (typeof splat.getBoundingBox === "function") {
     localBox = splat.getBoundingBox(true);
@@ -530,48 +564,133 @@ function getRobustBounds(splat) {
 }
 
 /**
- * Put every model into a comparable viewing frame:
- * OpenCV→Y-up, *shared* uniform scale (from the reference model), and each model's
- * own robust center → origin.
- *
- * Shared COLMAP translation alone breaks when mixing exporters (official 3DGS vs
- * Nerfstudio) that don't share the same numerical frame — panels look "out of sync"
- * under a locked camera. Own-center + shared scale keeps orbit/freecam matched.
+ * Object matrix: local PLY → Three.js Y-up world (before view fit).
+ * NS + dataparser: p_colmap = inv(T) @ (p_ns / scale), then OpenCV 180° X.
  */
-function alignSplatToFrame(splat, _frameCenter, frameExtent, targetExtent) {
-  splat.position.set(0, 0, 0);
-  splat.scale.setScalar(1);
-  splat.quaternion.set(1, 0, 0, 0); // OpenCV / COLMAP → Y-up
-  splat.updateMatrixWorld(true);
+function orientationMatrix(upAxis, dataparser, out = _matOrient) {
+  if (dataparser?.transform && dataparser.scale) {
+    const T = dataparser.transform;
+    const sc = dataparser.scale;
+    _matTmp.set(
+      T[0][0],
+      T[0][1],
+      T[0][2],
+      T[0][3],
+      T[1][0],
+      T[1][1],
+      T[1][2],
+      T[1][3],
+      T[2][0],
+      T[2][1],
+      T[2][2],
+      T[2][3],
+      0,
+      0,
+      0,
+      1,
+    );
+    _matTmp.invert();
+    _matTmp2.makeScale(1 / sc, 1 / sc, 1 / sc);
+    out.multiplyMatrices(_matTmp, _matTmp2);
+    // COLMAP OpenCV → Three.js Y-up
+    _matTmp.makeRotationX(Math.PI);
+    out.premultiply(_matTmp);
+    return out;
+  }
+  if (upAxis === "z") {
+    // Nerfstudio Z-up → Y-up (−90° X) without COLMAP lock
+    return out.makeRotationX(-Math.PI / 2);
+  }
+  if (upAxis === "y") return out.identity();
+  // Classic 3DGS / COLMAP OpenCV: Y-down → Y-up (180° X)
+  return out.makeRotationX(Math.PI);
+}
 
-  const own = getRobustBounds(splat);
-  const s = targetExtent / Math.max(frameExtent, 1e-6);
-  splat.scale.setScalar(s);
-  splat.position.copy(own.center).multiplyScalar(-s);
+/** Apply orientation matrix onto a splat mesh. */
+function applyOrientation(splat, upAxis, dataparser) {
+  orientationMatrix(upAxis, dataparser, _matOrient).decompose(
+    splat.position,
+    splat.quaternion,
+    splat.scale,
+  );
   splat.updateMatrixWorld(true);
 }
 
-/** Re-apply the shared scale / per-model recenter (e.g. after TL changes). */
+/**
+ * Pick OpenCV vs Z-up by which orientation makes Y the short axis (ground plane).
+ * Avoids a second PLY HTTP fetch (which aborted mid-stream and reset the server).
+ * @returns {UpAxis}
+ */
+function detectUpAxisFromSplat(splat, hint) {
+  if (hint === "opencv" || hint === "z" || hint === "y") return hint;
+
+  /** @type {UpAxis} */
+  let best = "opencv";
+  let bestScore = Infinity;
+  for (const axis of /** @type {UpAxis[]} */ (["opencv", "z"])) {
+    applyOrientation(splat, axis, null);
+    const { box } = getRobustBounds(splat);
+    box.getSize(_sizeTmp);
+    const score = _sizeTmp.y / Math.max(_sizeTmp.x, _sizeTmp.z, 1e-6);
+    if (score < bestScore) {
+      bestScore = score;
+      best = axis;
+    }
+  }
+  return best;
+}
+
+/**
+ * Orient into Y-up (and COLMAP if dataparser), then place into TL’s shared frame.
+ */
+function alignSplatToFrame(splat, upAxis, dataparser) {
+  const orient = orientationMatrix(upAxis, dataparser, _matOrient);
+
+  if (referenceCenter != null && referenceNativeExtent != null) {
+    const s = VIEW_EXTENT / Math.max(referenceNativeExtent, 1e-6);
+    _matTmp2.makeScale(s, s, s);
+    _matTmp.makeTranslation(
+      -s * referenceCenter.x,
+      -s * referenceCenter.y,
+      -s * referenceCenter.z,
+    );
+    // M = T(-s·c) · S(s) · Orient
+    _matTmp.multiply(_matTmp2).multiply(orient);
+    _matTmp.decompose(splat.position, splat.quaternion, splat.scale);
+  } else {
+    orient.decompose(splat.position, splat.quaternion, splat.scale);
+    splat.updateMatrixWorld(true);
+    const own = getRobustBounds(splat);
+    const s = VIEW_EXTENT / Math.max(own.extent, 1e-6);
+    _matTmp2.makeScale(s, s, s);
+    _matTmp.makeTranslation(-s * own.center.x, -s * own.center.y, -s * own.center.z);
+    _matTmp.multiply(_matTmp2).multiply(orient);
+    _matTmp.decompose(splat.position, splat.quaternion, splat.scale);
+  }
+  splat.updateMatrixWorld(true);
+}
+
+/** Re-apply alignment for every loaded panel. */
 function realignLoadedPanels() {
-  if (referenceExtent == null) return;
   for (const panel of visiblePanels()) {
-    if (!panel.splat) continue;
-    alignSplatToFrame(panel.splat, referenceCenter, referenceExtent, referenceExtent);
+    if (!panel.splat || !panel.upAxis) continue;
+    alignSplatToFrame(panel.splat, panel.upAxis, panel.dataparser);
+    if (typeof panel.splat.updateVersion === "function") panel.splat.updateVersion();
   }
 }
 
 function visiblePanels() {
   const panels = [left];
-  if (layout !== "single") panels.push(right);
-  if (layout === "quad") panels.push(bl, br);
+  if (layout === "dual") panels.push(right);
+  else if (layout === "quad") panels.push(right, bl, br);
+  else if (layout === "hex") panels.push(tc, right, bl, bc, br);
   return panels.filter(Boolean);
 }
 
 function setMoveSpeedForExtent(extent) {
-  if (!left) return;
   const base = Math.max(0.2, extent * 0.4);
-  left.freecam?.setMoveSpeed(base);
-  left.orbit?.setSceneScale(extent);
+  freecam?.setMoveSpeed(base);
+  orbit?.setSceneScale(extent);
 }
 
 function setControlMode(mode) {
@@ -580,68 +699,45 @@ function setControlMode(mode) {
   saveSettings();
   if (controlModeSelect) controlModeSelect.value = controlMode;
 
-  if (!left) {
+  if (!freecam || !orbit || !sharedRenderer) {
     updateHint();
     return;
   }
 
   if (controlMode === "freecam") {
-    left.orbit.enabled = false;
-    left.freecam.enabled = true;
+    orbit.enabled = false;
+    freecam.enabled = true;
+    sharedRenderer.domElement.style.cursor = "pointer";
   } else {
-    left.freecam.unlock();
-    left.freecam.enabled = false;
-    left.orbit.enabled = true;
-    left.renderer.domElement.style.cursor = "grab";
+    freecam.unlock();
+    freecam.enabled = false;
+    orbit.enabled = true;
+    sharedRenderer.domElement.style.cursor = "grab";
   }
   updateHint();
 }
 
-function placeCameraForScene(panel, extent, storeAsDefault) {
-  panel.camera.near = NEAR;
-  panel.camera.far = FAR;
-  panel.camera.updateProjectionMatrix();
+function placeCameraForScene(storeAsDefault) {
+  sharedCamera.near = NEAR;
+  sharedCamera.far = FAR;
+  sharedCamera.updateProjectionMatrix();
 
-  const dist = Math.max(extent * 0.9, 0.5);
-  panel.camera.position.set(dist * 0.15, dist * 0.25, dist);
-  panel.camera.up.set(0, 1, 0);
-  panel.camera.lookAt(0, 0, 0);
+  const dist = Math.max(VIEW_EXTENT * 0.9, 0.5);
+  sharedCamera.position.set(dist * 0.15, dist * 0.25, dist);
+  sharedCamera.up.set(0, 1, 0);
+  sharedCamera.lookAt(0, 0, 0);
 
   if (storeAsDefault) {
     defaultCamPose = {
-      position: panel.camera.position.clone(),
-      quaternion: panel.camera.quaternion.clone(),
+      position: sharedCamera.position.clone(),
+      quaternion: sharedCamera.quaternion.clone(),
     };
   }
 }
 
-/** Follower panels that mirror the control (TL / left) camera. */
+/** Non-control panels (everything except TL/left). */
 function followerPanels() {
-  if (layout === "quad") return [right, bl, br];
-  if (layout === "dual") return [right];
-  return [];
-}
-
-/** Copy control (TL/left) pose into a panel camera; aspect set by caller/resize. */
-function copyPoseFromLeft(panel) {
-  if (!left || !panel || panel === left) return;
-  panel.camera.position.copy(left.camera.position);
-  panel.camera.quaternion.copy(left.camera.quaternion);
-  panel.camera.up.copy(left.camera.up);
-  panel.camera.fov = left.camera.fov;
-  panel.camera.near = left.camera.near;
-  panel.camera.far = left.camera.far;
-}
-
-function syncFollowersFromLeft() {
-  if (!left) return;
-  left.camera.updateMatrixWorld(true);
-  for (const panel of followerPanels()) {
-    copyPoseFromLeft(panel);
-    panel.camera.aspect = left.camera.aspect;
-    panel.camera.updateProjectionMatrix();
-    panel.camera.updateMatrixWorld(true);
-  }
+  return visiblePanels().filter((p) => p && p !== left);
 }
 
 async function loadMethod(panel, methodId, { fitCamera = false, isReference = false } = {}) {
@@ -685,26 +781,33 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
       }
     }
 
-    // OpenCV→Y-up, then measure native bounds in that orientation.
-    splat.position.set(0, 0, 0);
-    splat.scale.setScalar(1);
-    splat.quaternion.set(1, 0, 0, 0);
-    splat.updateMatrixWorld(true);
+    const dataparser = method.dataparser || null;
+    panel.dataparser = dataparser;
+    // Export vertical axis (z for NS); framing always uses oriented COLMAP/Y-up bounds.
+    const upAxis = dataparser
+      ? method.up_axis === "y" || method.up_axis === "opencv" || method.up_axis === "z"
+        ? method.up_axis
+        : "z"
+      : detectUpAxisFromSplat(splat, method.up_axis);
+    panel.upAxis = upAxis;
+    if (!method.up_axis) method.up_axis = upAxis;
+
+    applyOrientation(splat, upAxis, dataparser);
     const bounds = getRobustBounds(splat);
     panel.extent = bounds.extent;
 
-    if (isReference || referenceExtent == null || referenceCenter == null) {
-      referenceExtent = bounds.extent;
+    if (isReference || referenceCenter == null || referenceNativeExtent == null) {
       referenceCenter = bounds.center.clone();
-      // Reference changed: keep other loaded panels in the same world frame.
+      referenceNativeExtent = bounds.extent;
       realignLoadedPanels();
     }
 
-    alignSplatToFrame(splat, referenceCenter, referenceExtent, referenceExtent);
-    setMoveSpeedForExtent(referenceExtent);
+    alignSplatToFrame(splat, upAxis, dataparser);
+    if (typeof splat.updateVersion === "function") splat.updateVersion();
+    setMoveSpeedForExtent(VIEW_EXTENT);
 
     updateOverlay(panel, method, "");
-    if (fitCamera) placeCameraForScene(panel, referenceExtent, true);
+    if (fitCamera) placeCameraForScene(true);
   } catch (err) {
     if (token.signal.aborted) return;
     console.error(err);
@@ -713,36 +816,47 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
 }
 
 function setMode(next) {
-  layout = next === "quad" ? "quad" : next === "dual" ? "dual" : "single";
+  layout =
+    next === "hex" ? "hex" : next === "quad" ? "quad" : next === "dual" ? "dual" : "single";
   stagesEl?.classList.toggle("quad", layout === "quad");
+  stagesEl?.classList.toggle("hex", layout === "hex");
 
-  stageRight.classList.toggle("hidden", layout === "single");
-  stageBl.classList.toggle("hidden", layout !== "quad");
-  stageBr.classList.toggle("hidden", layout !== "quad");
+  const showRight = layout !== "single";
+  const showQuadExtras = layout === "quad" || layout === "hex";
+  const showHexExtras = layout === "hex";
+
+  stageRight.classList.toggle("hidden", !showRight);
+  stageTc?.classList.toggle("hidden", !showHexExtras);
+  stageBl.classList.toggle("hidden", !showQuadExtras);
+  stageBc?.classList.toggle("hidden", !showHexExtras);
+  stageBr.classList.toggle("hidden", !showQuadExtras);
 
   const leftName = leftLabel?.querySelector(".sel-name");
   const rightName = rightLabel?.querySelector(".sel-name");
   if (leftName) {
-    leftName.textContent = layout === "quad" ? "TL" : layout === "single" ? "Model" : "Left";
+    leftName.textContent =
+      layout === "hex" || layout === "quad" ? "TL" : layout === "single" ? "Model" : "Left";
   }
   if (rightName) {
-    rightName.textContent = layout === "quad" ? "TR" : "Right";
+    rightName.textContent = layout === "hex" || layout === "quad" ? "TR" : "Right";
   }
-  rightLabel.style.display = layout === "single" ? "none" : "";
-  if (blLabel) blLabel.style.display = layout === "quad" ? "" : "none";
-  if (brLabel) brLabel.style.display = layout === "quad" ? "" : "none";
+  rightLabel.style.display = showRight ? "" : "none";
+  if (tcLabel) tcLabel.style.display = showHexExtras ? "" : "none";
+  if (blLabel) blLabel.style.display = showQuadExtras ? "" : "none";
+  if (bcLabel) bcLabel.style.display = showHexExtras ? "" : "none";
+  if (brLabel) brLabel.style.display = showQuadExtras ? "" : "none";
 
-  resizeAll();
-  syncFollowersFromLeft();
+  resizeSharedRenderer();
 }
 
 function resizeAll() {
-  resizePanel(left);
-  for (const panel of followerPanels()) resizePanel(panel);
+  resizeSharedRenderer();
 }
 
 function populateSelects(manifest) {
-  const selects = [leftSelect, rightSelect, blSelect, brSelect].filter(Boolean);
+  const selects = [leftSelect, tcSelect, rightSelect, blSelect, bcSelect, brSelect].filter(
+    Boolean,
+  );
   for (const sel of selects) {
     sel.innerHTML = "";
     for (const m of methods) {
@@ -759,30 +873,41 @@ function populateSelects(manifest) {
   rightSelect.value = pick(manifest.default_right, 1);
   if (blSelect) blSelect.value = pick(manifest.default_bl, 2);
   if (brSelect) brSelect.value = pick(manifest.default_br, 3);
+  if (tcSelect) tcSelect.value = pick(manifest.default_tc, 4);
+  if (bcSelect) bcSelect.value = pick(manifest.default_bc, 5);
 }
 
 let lastFrameTime = performance.now();
 function animate(now) {
   const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
   lastFrameTime = now;
-  if (controlMode === "freecam") left.freecam?.update(dt);
-  else left.orbit?.update(dt);
+  if (controlMode === "freecam") freecam?.update(dt);
+  else orbit?.update(dt);
 
-  // Per-panel cameras, pose copied every frame. Sharing one Camera across multiple
-  // WebGLRenderers/Spark paths can drift; mutating aspect on a shared cam is worse.
-  left.camera.updateMatrixWorld(true);
+  const canvasW = stagesEl.clientWidth;
+  const canvasH = stagesEl.clientHeight;
+  if (canvasW < 1 || canvasH < 1) return;
+
+  // Viewport/scissor are in drawing-buffer pixels (CSS × devicePixelRatio).
+  const pr = sharedRenderer.getPixelRatio();
+  sharedRenderer.setScissorTest(true);
+  sharedRenderer.setViewport(0, 0, canvasW * pr, canvasH * pr);
+  sharedRenderer.setScissor(0, 0, canvasW * pr, canvasH * pr);
+  sharedRenderer.setClearColor(0x000000, 1);
+  sharedRenderer.clear();
+
+  sharedCamera.updateMatrixWorld(true);
 
   for (const panel of visiblePanels()) {
-    const w = panel.stage.clientWidth;
-    const h = panel.stage.clientHeight;
+    const { x, y, w, h } = stageRect(panel.stage);
     if (w < 1 || h < 1) continue;
-
-    if (panel !== left) copyPoseFromLeft(panel);
-    panel.camera.aspect = w / h;
-    panel.camera.updateProjectionMatrix();
-    panel.camera.updateMatrixWorld(true);
+    const glY = canvasH - y - h;
+    sharedRenderer.setViewport(x * pr, glY * pr, w * pr, h * pr);
+    sharedRenderer.setScissor(x * pr, glY * pr, w * pr, h * pr);
+    sharedCamera.aspect = w / h;
+    sharedCamera.updateProjectionMatrix();
     panel.splat?.updateMatrixWorld?.(true);
-    panel.renderer.render(panel.scene, panel.camera);
+    sharedRenderer.render(panel.scene, sharedCamera);
   }
 }
 
@@ -793,21 +918,27 @@ async function ensurePanelLoaded(panel, methodId, opts) {
 
 async function reloadVisible({ resetRef = false } = {}) {
   if (resetRef) {
-    referenceExtent = null;
     referenceCenter = null;
+    referenceNativeExtent = null;
   }
+  // TL first — its oriented bounds are the shared COLMAP frame for every panel.
   await loadMethod(left, leftSelect.value, { fitCamera: true, isReference: true });
   const tasks = [];
-  if (layout !== "single") {
-    tasks.push(loadMethod(right, rightSelect.value, { fitCamera: false, isReference: false }));
-  }
-  if (layout === "quad") {
-    tasks.push(loadMethod(bl, blSelect.value, { fitCamera: false, isReference: false }));
-    tasks.push(loadMethod(br, brSelect.value, { fitCamera: false, isReference: false }));
+  for (const panel of followerPanels()) {
+    const sel =
+      panel === tc
+        ? tcSelect
+        : panel === right
+          ? rightSelect
+          : panel === bl
+            ? blSelect
+            : panel === bc
+              ? bcSelect
+              : brSelect;
+    if (sel) tasks.push(loadMethod(panel, sel.value, { fitCamera: false, isReference: false }));
   }
   await Promise.all(tasks);
   realignLoadedPanels();
-  syncFollowersFromLeft();
 }
 
 const SETTINGS_FIELDS = [
@@ -876,14 +1007,22 @@ async function loadMergedManifest() {
   }
 
   const byId = new Map();
-  for (const m of base.methods || []) byId.set(m.id, m);
-  for (const m of local?.methods || []) byId.set(m.id, m); // local overrides / adds
+  // Local overlay can replace the public demo list (pipeline fair5 / TA runs).
+  if (local?.replace_methods && Array.isArray(local.methods)) {
+    for (const m of local.methods) byId.set(m.id, m);
+  } else {
+    for (const m of base.methods || []) byId.set(m.id, m);
+    for (const m of local?.methods || []) byId.set(m.id, m);
+  }
 
   const methodsList = [...byId.values()];
   // Prefer local defaults when they resolve to a known method
   const pickDefault = (localKey, baseKey, fallbackIndex, fallbackId) =>
     (local?.[localKey] && byId.has(local[localKey]) && local[localKey]) ||
-    (base[baseKey] && byId.has(base[baseKey]) && base[baseKey]) ||
+    (!local?.replace_methods &&
+      base[baseKey] &&
+      byId.has(base[baseKey]) &&
+      base[baseKey]) ||
     methodsList[fallbackIndex]?.id ||
     fallbackId;
 
@@ -891,8 +1030,24 @@ async function loadMergedManifest() {
   const default_right = pickDefault("default_right", "default_right", 1, default_left);
   const default_bl = pickDefault("default_bl", "default_bl", 2, default_left);
   const default_br = pickDefault("default_br", "default_br", 3, default_right);
+  const default_tc = pickDefault("default_tc", "default_tc", 4, default_left);
+  const default_bc = pickDefault("default_bc", "default_bc", 5, default_right);
 
-  return { default_left, default_right, default_bl, default_br, methods: methodsList };
+  return {
+    default_left,
+    default_right,
+    default_bl,
+    default_br,
+    default_tc,
+    default_bc,
+    methods: methodsList,
+  };
+}
+
+function bindFollowerSelect(select, panel) {
+  select?.addEventListener("change", async () => {
+    await loadMethod(panel, select.value, { fitCamera: false, isReference: false });
+  });
 }
 
 async function main() {
@@ -905,10 +1060,23 @@ async function main() {
 
   populateSelects(manifest);
 
-  left = createPanel(stageLeft, true);
-  right = createPanel(stageRight, false);
-  bl = createPanel(stageBl, false);
-  br = createPanel(stageBr, false);
+  sharedCamera = new THREE.PerspectiveCamera(55, 1, NEAR, FAR);
+  sharedCamera.position.set(0, 0.4, 2.5);
+
+  sharedRenderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
+  sharedRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+  sharedRenderer.domElement.classList.add("spark-canvas");
+  stagesEl.insertBefore(sharedRenderer.domElement, stagesEl.firstChild);
+
+  freecam = new FreeCam(sharedCamera, sharedRenderer.domElement);
+  orbit = new OrbitCam(sharedCamera, sharedRenderer.domElement);
+
+  left = createPanel(stageLeft);
+  tc = createPanel(stageTc);
+  right = createPanel(stageRight);
+  bl = createPanel(stageBl);
+  bc = createPanel(stageBc);
+  br = createPanel(stageBr);
 
   modeSelect.value = "dual";
   setMode("dual");
@@ -917,22 +1085,24 @@ async function main() {
   modeSelect.addEventListener("change", async () => {
     const prev = layout;
     setMode(modeSelect.value);
-    if (layout === prev) return;
-    // Load any newly visible panels; skip full reload when possible.
-    if (layout === "single") return;
+    if (layout === prev || layout === "single") return;
     const tasks = [];
-    if (prev === "single" || (layout === "quad" && prev === "dual")) {
-      // dual←single or quad←dual/single: ensure newly shown panels
-      if (prev === "single") {
-        tasks.push(ensurePanelLoaded(right, rightSelect.value, { fitCamera: false }));
-      }
-      if (layout === "quad") {
-        tasks.push(ensurePanelLoaded(bl, blSelect.value, { fitCamera: false }));
-        tasks.push(ensurePanelLoaded(br, brSelect.value, { fitCamera: false }));
-      }
+    for (const panel of followerPanels()) {
+      if (panel.splat && panel.methodId) continue;
+      const sel =
+        panel === tc
+          ? tcSelect
+          : panel === right
+            ? rightSelect
+            : panel === bl
+              ? blSelect
+              : panel === bc
+                ? bcSelect
+                : brSelect;
+      if (sel) tasks.push(ensurePanelLoaded(panel, sel.value, { fitCamera: false }));
     }
     await Promise.all(tasks);
-    syncFollowersFromLeft();
+    realignLoadedPanels();
     resizeAll();
   });
   controlModeSelect?.addEventListener("change", () => {
@@ -941,31 +1111,23 @@ async function main() {
   leftSelect.addEventListener("change", async () => {
     await reloadVisible({ resetRef: true });
   });
-  rightSelect.addEventListener("change", async () => {
-    await loadMethod(right, rightSelect.value, { fitCamera: false, isReference: false });
-    syncFollowersFromLeft();
-  });
-  blSelect?.addEventListener("change", async () => {
-    await loadMethod(bl, blSelect.value, { fitCamera: false, isReference: false });
-    syncFollowersFromLeft();
-  });
-  brSelect?.addEventListener("change", async () => {
-    await loadMethod(br, brSelect.value, { fitCamera: false, isReference: false });
-    syncFollowersFromLeft();
-  });
+  bindFollowerSelect(rightSelect, right);
+  bindFollowerSelect(tcSelect, tc);
+  bindFollowerSelect(blSelect, bl);
+  bindFollowerSelect(bcSelect, bc);
+  bindFollowerSelect(brSelect, br);
   resetBtn.addEventListener("click", () => {
     if (!defaultCamPose) return;
-    left.camera.position.copy(defaultCamPose.position);
-    left.camera.quaternion.copy(defaultCamPose.quaternion);
-    left.camera.up.set(0, 1, 0);
-    syncFollowersFromLeft();
+    sharedCamera.position.copy(defaultCamPose.position);
+    sharedCamera.quaternion.copy(defaultCamPose.quaternion);
+    sharedCamera.up.set(0, 1, 0);
   });
 
   window.addEventListener("resize", resizeAll);
   resizeAll();
 
   await reloadVisible({ resetRef: true });
-  left.renderer.setAnimationLoop(animate);
+  sharedRenderer.setAnimationLoop(animate);
 }
 
 main().catch((err) => {
