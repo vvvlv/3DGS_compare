@@ -629,6 +629,16 @@ async function loadMethod(panel, methodId, { fitCamera = false, isReference = fa
   updateOverlay(panel, method, method.fileBytes ? "Decoding PLY…" : "Loading PLY…");
   disposeSplat(panel);
 
+  if (method.status === "oom" || method.status === "failed") {
+    const msg =
+      method.status === "oom"
+        ? "OOM during training. No model to show."
+        : "Training failed. No model to show.";
+    updateOverlay(panel, method, msg, true);
+    if (fitCamera) placeCameraForScene(true);
+    return;
+  }
+
   try {
     /** @type {ConstructorParameters<typeof SplatMesh>[0]} */
     const splatOpts = {
