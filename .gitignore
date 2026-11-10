@@ -5,6 +5,10 @@ splats/*
 splats/*.ply.bak
 splats/.tmp*
 manifest.local.json
+live.json
+live.json.tmp
+previews/
+reports/
 *.ckpt
 .DS_Store
 Thumbs.db

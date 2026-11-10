@@ -68,12 +68,215 @@
       display: flex;
       flex-direction: column;
     }
+    #workspace {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
     #stages {
       position: relative;
       display: flex;
       flex: 1;
+      min-width: 0;
       min-height: 0;
       background: #000;
+    }
+    .stage .render-view {
+      display: none;
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      background: #05070a;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+    }
+    body.view-rendered .stage .render-view { display: flex; }
+    body.view-rendered .stage .render-view img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+    body.view-rendered .stage .render-view .missing {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 12px;
+      text-align: center;
+    }
+    #explorer-panel {
+      display: none;
+      width: min(400px, 38vw);
+      flex: 0 0 min(400px, 38vw);
+      background: var(--panel);
+      border-left: 1px solid var(--border);
+      overflow: auto;
+      padding: 12px 14px 16px;
+      z-index: 3;
+    }
+    body.explorer-open #explorer-panel { display: block; }
+    #explorer-panel h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    #explorer-panel h4 {
+      margin: 14px 0 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    #explorer-panel .explorer-meta {
+      color: var(--muted);
+      font-size: 12px;
+      margin: 0 0 8px;
+    }
+    #explorer-protocol p { margin: 0 0 6px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    #explorer-pipeline {
+      margin: 0 0 12px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.02);
+      font-size: 12px;
+    }
+    #explorer-pipeline .pipe-head {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 10px;
+      align-items: baseline;
+      margin-bottom: 6px;
+    }
+    #explorer-pipeline .pipe-label { font-weight: 600; }
+    #explorer-pipeline .pipe-state {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+    }
+    #explorer-pipeline .pipe-state[data-state="running"] { color: #3fb950; }
+    #explorer-pipeline .pipe-state[data-state="stale"] { color: #d29922; }
+    #explorer-pipeline .pipe-state[data-state="failed"] { color: #f85149; }
+    #explorer-pipeline .pipe-state[data-state="done"] { color: var(--muted); }
+    #explorer-pipeline .pipe-meta { color: var(--muted); margin: 0 0 8px; font-size: 11px; }
+    #explorer-pipeline .pipe-methods {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+    #explorer-pipeline .pipe-chip {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+    #explorer-pipeline .pipe-chip[data-status="running"] {
+      border-color: #3fb950;
+      color: #3fb950;
+    }
+    #explorer-pipeline .pipe-chip[data-status="queued"] { color: var(--muted); }
+    #explorer-pipeline .pipe-chip[data-status="done"] { opacity: 0.85; }
+    #explorer-pipeline .pipe-chip[data-status="failed"],
+    #explorer-pipeline .pipe-chip[data-status="oom"] {
+      border-color: #f85149;
+      color: #f85149;
+    }
+    #explorer-pipeline .pipe-idle { color: var(--muted); margin: 0; }
+    #explorer-table { overflow: auto; margin-bottom: 8px; }
+    #explorer-table table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    #explorer-table th, #explorer-table td {
+      border-bottom: 1px solid var(--border);
+      padding: 4px 5px;
+      text-align: left;
+    }
+    #explorer-table th { color: var(--muted); font-weight: 500; }
+    #explorer-charts .hq-chart { margin-bottom: 12px; }
+    #explorer-charts h4 {
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--text);
+      margin: 0 0 4px;
+      font-size: 12px;
+    }
+    #scrubber {
+      display: none;
+      flex: 0 0 auto;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      padding: 10px 14px 12px;
+      z-index: 3;
+      gap: 12px 18px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    body.explorer-open #scrubber { display: flex; }
+    #scrubber .iter-block {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex: 1;
+      min-width: 240px;
+    }
+    #scrubber #scrub-iter {
+      font-size: 22px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      min-width: 4.5ch;
+    }
+    #scrubber .slider-wrap { flex: 1; min-width: 160px; }
+    #scrubber input[type="range"] { width: 100%; accent-color: var(--accent); }
+    #scrubber .ticks {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      margin-top: 2px;
+    }
+    #scrubber label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--muted);
+    }
+    #scrubber select, #scrubber button {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font: inherit;
+    }
+    #scrubber button {
+      cursor: pointer;
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    #scrubber .mode-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    #scrubber .mode-toggle button {
+      border: none;
+      border-radius: 0;
+      color: var(--muted);
+      background: var(--bg);
+    }
+    #scrubber .mode-toggle button.active {
+      background: #1a2333;
+      color: var(--accent);
     }
     /* One shared WebGL canvas behind the grid (perfect camera sync, one GL context). */
     #stages > canvas.spark-canvas {
@@ -139,6 +342,7 @@
       position: absolute;
       top: 10px;
       left: 10px;
+      z-index: 2;
       padding: 8px 10px;
       background: rgba(14, 17, 22, 0.78);
       border: 1px solid var(--border);
@@ -224,6 +428,7 @@
       font-size: 11px;
       line-height: 1.45;
     }
+    .muted { color: var(--muted); }
   </style>
   <script type="importmap">
   {
@@ -286,8 +491,9 @@
     <input id="load-ply-input" class="sr-only" type="file" accept=".ply,application/octet-stream" />
     <button type="button" id="reset-cam">Reset camera</button>
     <button type="button" id="settings-btn">Settings</button>
+    <button type="button" id="explorer-btn">Training Explorer</button>
     <span class="spacer"></span>
-    <span class="hint">Click view to fly · RMB fine · Shift boost · Tab release</span>
+    <span class="hint">Click view to fly · RMB fine · Shift boost · Tab release · [ ] scrub iters</span>
   </div>
   <aside id="settings-panel" aria-label="Viewer settings">
     <h3>Controls</h3>
@@ -330,51 +536,91 @@
       Settings are saved in this browser.
     </p>
   </aside>
-  <div id="stages">
-    <!-- Grid order: TL TC TR / BL BC BR (hidden stages drop out of flex/grid). -->
-    <div class="stage" id="stage-left">
-      <div class="overlay" id="overlay-left">
-        <h2>—</h2>
-        <div class="meta"></div>
-        <div class="status">Loading…</div>
+  <div id="workspace">
+    <div id="stages">
+      <!-- Grid order: TL TC TR / BL BC BR (hidden stages drop out of flex/grid). -->
+      <div class="stage" id="stage-left">
+        <div class="render-view" aria-hidden="true"><div class="missing">No render</div></div>
+        <div class="overlay" id="overlay-left">
+          <h2>—</h2>
+          <div class="meta"></div>
+          <div class="status">Loading…</div>
+        </div>
+      </div>
+      <div class="stage hidden" id="stage-tc">
+        <div class="render-view" aria-hidden="true"><div class="missing">No render</div></div>
+        <div class="overlay" id="overlay-tc">
+          <h2>—</h2>
+          <div class="meta"></div>
+          <div class="status">Loading…</div>
+        </div>
+      </div>
+      <div class="stage" id="stage-right">
+        <div class="render-view" aria-hidden="true"><div class="missing">No render</div></div>
+        <div class="overlay" id="overlay-right">
+          <h2>—</h2>
+          <div class="meta"></div>
+          <div class="status">Loading…</div>
+        </div>
+      </div>
+      <div class="stage hidden" id="stage-bl">
+        <div class="render-view" aria-hidden="true"><div class="missing">No render</div></div>
+        <div class="overlay" id="overlay-bl">
+          <h2>—</h2>
+          <div class="meta"></div>
+          <div class="status">Loading…</div>
+        </div>
+      </div>
+      <div class="stage hidden" id="stage-bc">
+        <div class="render-view" aria-hidden="true"><div class="missing">No render</div></div>
+        <div class="overlay" id="overlay-bc">
+          <h2>—</h2>
+          <div class="meta"></div>
+          <div class="status">Loading…</div>
+        </div>
+      </div>
+      <div class="stage hidden" id="stage-br">
+        <div class="render-view" aria-hidden="true"><div class="missing">No render</div></div>
+        <div class="overlay" id="overlay-br">
+          <h2>—</h2>
+          <div class="meta"></div>
+          <div class="status">Loading…</div>
+        </div>
       </div>
     </div>
-    <div class="stage hidden" id="stage-tc">
-      <div class="overlay" id="overlay-tc">
-        <h2>—</h2>
-        <div class="meta"></div>
-        <div class="status">Loading…</div>
+    <aside id="explorer-panel" aria-label="Training Explorer">
+      <h3>Training Explorer</h3>
+      <p id="explorer-meta" class="explorer-meta">Open an experiment to inspect metrics, training curves, and capture steps.</p>
+      <h4>Pipeline</h4>
+      <div id="explorer-pipeline" aria-live="polite">
+        <p class="pipe-idle">No active launch. Start one with <code>python3 launch.py &lt;experiment&gt;</code>.</p>
       </div>
-    </div>
-    <div class="stage" id="stage-right">
-      <div class="overlay" id="overlay-right">
-        <h2>—</h2>
-        <div class="meta"></div>
-        <div class="status">Loading…</div>
-      </div>
-    </div>
-    <div class="stage hidden" id="stage-bl">
-      <div class="overlay" id="overlay-bl">
-        <h2>—</h2>
-        <div class="meta"></div>
-        <div class="status">Loading…</div>
-      </div>
-    </div>
-    <div class="stage hidden" id="stage-bc">
-      <div class="overlay" id="overlay-bc">
-        <h2>—</h2>
-        <div class="meta"></div>
-        <div class="status">Loading…</div>
-      </div>
-    </div>
-    <div class="stage hidden" id="stage-br">
-      <div class="overlay" id="overlay-br">
-        <h2>—</h2>
-        <div class="meta"></div>
-        <div class="status">Loading…</div>
-      </div>
-    </div>
+      <div id="explorer-protocol"></div>
+      <h4>Evaluation</h4>
+      <div id="explorer-table"></div>
+      <h4>Curves</h4>
+      <div id="explorer-charts"></div>
+    </aside>
   </div>
-  <script type="module" src="./app.js?v=oom-panel-1"></script>
+  <div id="scrubber" aria-label="Training step scrubber">
+    <div class="iter-block">
+      <button type="button" id="scrub-prev" title="Previous step">◀</button>
+      <strong id="scrub-iter">—</strong>
+      <button type="button" id="scrub-next" title="Next step">▶</button>
+      <div class="slider-wrap">
+        <input id="scrub-slider" type="range" min="0" max="0" step="1" value="0" />
+        <div id="scrub-ticks" class="ticks"></div>
+      </div>
+    </div>
+    <div class="mode-toggle" role="group" aria-label="View mode">
+      <button type="button" id="mode-interactive" class="active">Interactive</button>
+      <button type="button" id="mode-rendered">Rendered</button>
+    </div>
+    <label id="pov-label">
+      Camera
+      <select id="scrub-pov"></select>
+    </label>
+  </div>
+  <script type="module" src="./app.js?v=live-status-1"></script>
 </body>
 </html>

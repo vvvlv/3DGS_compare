@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { SparkRenderer, SplatMesh } from "@sparkjsdev/spark";
+import { initHQ } from "./hq.js";
 
 const viewerModeSelect = document.getElementById("viewer-mode");
 const experimentLabel = document.getElementById("experiment-label");
@@ -62,7 +63,7 @@ function saveSettings() {
 
 /**
  * @typedef {{ transform: number[][], scale: number }} DataparserTransform
- * @typedef {{ id: string, label: string, url?: string, fileBytes?: ArrayBuffer|Uint8Array, fileName?: string, num_gaussians?: number|null, psnr?: number|null, ssim?: number|null, lpips?: number|null, peak_vram_mib?: number|null, notes?: string|null, up_axis?: "opencv"|"z"|"y"|null, dataparser?: DataparserTransform|null, experiment?: string|null }} Method
+ * @typedef {{ id: string, label: string, url?: string, fileBytes?: ArrayBuffer|Uint8Array, fileName?: string, num_gaussians?: number|null, psnr?: number|null, ssim?: number|null, lpips?: number|null, peak_vram_mib?: number|null, create_seconds?: number|null, wall_seconds?: number|null, notes?: string|null, up_axis?: "opencv"|"z"|"y"|null, dataparser?: DataparserTransform|null, experiment?: string|null }} Method
  * @typedef {{ id: string, label: string, methodIds: string[] }} Experiment
  */
 /** @type {Method[]} */
@@ -75,6 +76,8 @@ let experimentById = new Map();
 let viewerMode = "custom";
 /** @type {string|null} */
 let activeExperimentId = null;
+/** @type {{ loadReport?: Function, jumpToIter?: Function, setExplorerOpen?: Function }|null} */
+let hqApi = null;
 
 /**
  * @typedef {"opencv"|"z"|"y"} UpAxis
@@ -161,6 +164,8 @@ class FreeCam {
     this.enabled = true;
     this.isLocked = false;
     this.rmbHeld = false;
+    this._keyboardLocked = false;
+    this._beforeUnload = null;
     this._keys = new Set();
     this._wishLocal = new THREE.Vector3();
     this._wishWorld = new THREE.Vector3();
@@ -189,9 +194,12 @@ class FreeCam {
       this.isLocked = document.pointerLockElement === domElement;
       domElement.style.cursor = this.isLocked ? "none" : "pointer";
       updateHint();
-      if (!this.isLocked) {
+      if (this.isLocked) {
+        this._armCloseGuard();
+      } else {
         this._keys.clear();
         this.rmbHeld = false;
+        this._disarmCloseGuard();
       }
     });
     // Keep context menu from stealing RMB when flying.
@@ -221,6 +229,51 @@ class FreeCam {
 
   unlock() {
     if (document.pointerLockElement) document.exitPointerLock();
+    this._disarmCloseGuard();
+  }
+
+  async _armCloseGuard() {
+    // Ctrl+W closes the tab unless Keyboard Lock is held (requires fullscreen).
+    try {
+      if (document.documentElement.requestFullscreen && !document.fullscreenElement) {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch (_) {
+      /* user may deny fullscreen */
+    }
+    try {
+      if (navigator.keyboard?.lock) {
+        await navigator.keyboard.lock(["KeyW", "ControlLeft", "ControlRight"]);
+        this._keyboardLocked = true;
+      }
+    } catch (_) {
+      this._keyboardLocked = false;
+    }
+    if (!this._keyboardLocked && !this._beforeUnload) {
+      this._beforeUnload = (e) => {
+        e.preventDefault();
+        e.returnValue = "";
+      };
+      window.addEventListener("beforeunload", this._beforeUnload);
+    }
+  }
+
+  _disarmCloseGuard() {
+    if (this._keyboardLocked && navigator.keyboard?.unlock) {
+      try {
+        navigator.keyboard.unlock();
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    this._keyboardLocked = false;
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {});
+    }
+    if (this._beforeUnload) {
+      window.removeEventListener("beforeunload", this._beforeUnload);
+      this._beforeUnload = null;
+    }
   }
 
   _onKeyDown(e) {
@@ -232,6 +285,12 @@ class FreeCam {
       return;
     }
     if (!this.isLocked) return;
+    // Swallow Ctrl+W while flying when keyboard lock delivered it.
+    if ((e.ctrlKey || e.metaKey) && (e.code === "KeyW" || e.key === "w" || e.key === "W")) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (
       ["Space", "ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "KeyQ", "KeyE"].includes(
         e.code,
@@ -302,6 +361,24 @@ function formatCount(n) {
   return Number(n).toLocaleString();
 }
 
+/** Wall-clock training / splat creation time from create_seconds (or wall_seconds). */
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) return "—";
+  const total = Math.max(0, Math.round(Number(seconds)));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function methodTrainSeconds(method) {
+  if (!method) return null;
+  const v = method.create_seconds ?? method.wall_seconds;
+  return v == null || Number.isNaN(Number(v)) ? null : Number(v);
+}
+
 function updateOverlay(panel, method, statusText, isError = false) {
   const title = panel.overlay.querySelector("h2");
   const meta = panel.overlay.querySelector(".meta");
@@ -314,6 +391,7 @@ function updateOverlay(panel, method, statusText, isError = false) {
       `PSNR ${formatMetric(method.psnr)} · SSIM ${formatMetric(method.ssim, 3)} · LPIPS ${formatMetric(method.lpips, 3)}`,
     );
     lines.push(`Peak VRAM: ${method.peak_vram_mib != null ? `${formatMetric(method.peak_vram_mib, 0)} MiB` : "—"}`);
+    lines.push(`Train: ${formatDuration(methodTrainSeconds(method))}`);
     if (method.notes) lines.push(method.notes);
   }
   meta.innerHTML = lines.map((l) => `<div>${l}</div>`).join("");
@@ -817,7 +895,15 @@ function buildExperiments(methodsList, manifestExperiments) {
         .map(String)
         .filter((mid) => methodById.has(mid));
       if (!methodIds.length) continue;
-      out.push({ id, label: String(raw.label || id), methodIds });
+      out.push({
+        id,
+        label: String(raw.label || id),
+        methodIds,
+        campaign: String(raw.campaign || "legacy"),
+        description: String(raw.description || ""),
+        report: raw.report ? String(raw.report) : `reports/${id}.json`,
+        capture: raw.capture || null,
+      });
     }
     if (out.length) return out;
   }
@@ -834,17 +920,39 @@ function buildExperiments(methodsList, manifestExperiments) {
     id,
     label: id,
     methodIds,
+    campaign: "legacy",
   }));
 }
 
 function populateExperimentSelect(preferredId) {
   if (!experimentSelect) return;
   experimentSelect.innerHTML = "";
+  const groupOrder = [
+    ["smoke", "Smoke"],
+    ["matched", "Similar setup"],
+    ["best", "Best under 6GB"],
+    ["search", "Config search"],
+    ["legacy", "Legacy"],
+  ];
+  const byCamp = new Map(groupOrder.map(([id]) => [id, []]));
   for (const exp of experiments) {
-    const opt = document.createElement("option");
-    opt.value = exp.id;
-    opt.textContent = `${exp.label} (${exp.methodIds.length})`;
-    experimentSelect.appendChild(opt);
+    const camp = byCamp.has(exp.campaign) ? exp.campaign : "legacy";
+    byCamp.get(camp).push(exp);
+  }
+  for (const [campId, campLabel] of groupOrder) {
+    const list = byCamp.get(campId) || [];
+    if (!list.length) continue;
+    const og = document.createElement("optgroup");
+    og.label = campLabel;
+    for (const exp of list) {
+      const opt = document.createElement("option");
+      opt.value = exp.id;
+      const base = `${exp.label} (${exp.methodIds.length})`;
+      opt.dataset.baseLabel = base;
+      opt.textContent = base;
+      og.appendChild(opt);
+    }
+    experimentSelect.appendChild(og);
   }
   const pick =
     (preferredId && experimentById.has(preferredId) && preferredId) ||
@@ -857,6 +965,33 @@ function populateExperimentSelect(preferredId) {
     const expOpt = viewerModeSelect.querySelector('option[value="experiment"]');
     if (expOpt) expOpt.disabled = experiments.length === 0;
   }
+  applyLiveExperimentBadges(hqApi?.getLiveJob?.() || null);
+}
+
+/**
+ * Suffix the matching experiment option with live progress, e.g. "(running 2/6)".
+ * @param {any|null} job
+ * @param {{ stale?: boolean }} [meta]
+ */
+function applyLiveExperimentBadges(job, meta = {}) {
+  if (!experimentSelect) return;
+  const methods = Array.isArray(job?.methods) ? job.methods : [];
+  const done = methods.filter((m) => m.status === "done" || m.status === "oom").length;
+  let badge = "";
+  if (job?.experiment_id) {
+    const state = meta.stale && job.status === "running" ? "stale" : job.status || "running";
+    if (state === "running" || state === "stale") {
+      badge = ` (${state} ${done}/${methods.length || 0})`;
+    } else if (state === "done" || state === "failed") {
+      badge = ` (last: ${state} ${done}/${methods.length || 0})`;
+    }
+  }
+  for (const opt of experimentSelect.querySelectorAll("option")) {
+    const base = opt.dataset.baseLabel || opt.textContent;
+    opt.dataset.baseLabel = base;
+    opt.textContent =
+      job && opt.value === job.experiment_id ? `${base}${badge}` : base;
+  }
 }
 
 function methodSelects() {
@@ -864,7 +999,10 @@ function methodSelects() {
 }
 
 function methodOptionLabel(method) {
-  return `${method.label} (${formatCount(method.num_gaussians)})`;
+  const parts = [formatCount(method.num_gaussians)];
+  const train = methodTrainSeconds(method);
+  if (train != null) parts.push(formatDuration(train));
+  return `${method.label} (${parts.join(" · ")})`;
 }
 
 function refreshMethodOptionLabel(methodId) {
@@ -931,13 +1069,24 @@ async function loadLocalPlyFile(file) {
 
 function populateSelects(manifest) {
   const selects = methodSelects();
+  const byExp = new Map();
+  for (const m of methods) {
+    const eid = experimentIdForMethod(m) || "other";
+    if (!byExp.has(eid)) byExp.set(eid, []);
+    byExp.get(eid).push(m);
+  }
   for (const sel of selects) {
     sel.innerHTML = "";
-    for (const m of methods) {
-      const opt = document.createElement("option");
-      opt.value = m.id;
-      opt.textContent = methodOptionLabel(m);
-      sel.appendChild(opt);
+    for (const [eid, list] of byExp) {
+      const og = document.createElement("optgroup");
+      og.label = eid;
+      for (const m of list) {
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = methodOptionLabel(m);
+        og.appendChild(opt);
+      }
+      sel.appendChild(og);
     }
   }
   const pick = (id, fallbackIndex) =>
@@ -1040,6 +1189,9 @@ async function loadExperiment(expId, { resetRef = true } = {}) {
   }
   await Promise.all(tasks);
   realignLoadedPanels();
+  if (hqApi?.loadReport) {
+    await hqApi.loadReport(exp);
+  }
 }
 
 async function reloadVisible({ resetRef = false } = {}) {
@@ -1159,7 +1311,6 @@ async function loadMergedManifest() {
     for (const m of local?.methods || []) byId.set(m.id, m);
   }
 
-  const methodsList = [...byId.values()];
   // Prefer local defaults when they resolve to a known method
   const pickDefault = (localKey, baseKey, fallbackIndex, fallbackId) =>
     (local?.[localKey] && byId.has(local[localKey]) && local[localKey]) ||
@@ -1167,15 +1318,27 @@ async function loadMergedManifest() {
       base[baseKey] &&
       byId.has(base[baseKey]) &&
       base[baseKey]) ||
-    methodsList[fallbackIndex]?.id ||
+    [...byId.values()][fallbackIndex]?.id ||
     fallbackId;
 
+  // Always offer the committed dummy Training Explorer fixture.
+  const dummy = await loadDummyTrainingFixture();
+  if (dummy) {
+    for (const m of dummy.methods) byId.set(m.id, m);
+  }
+
+  const methodsList = [...byId.values()];
   const default_left = pickDefault("default_left", "default_left", 0, methodsList[0]?.id);
   const default_right = pickDefault("default_right", "default_right", 1, default_left);
   const default_bl = pickDefault("default_bl", "default_bl", 2, default_left);
   const default_br = pickDefault("default_br", "default_br", 3, default_right);
   const default_tc = pickDefault("default_tc", "default_tc", 4, default_left);
   const default_bc = pickDefault("default_bc", "default_bc", 5, default_right);
+
+  let experimentsList = local?.experiments || base.experiments || null;
+  if (dummy) {
+    experimentsList = [...(experimentsList || []), dummy.experiment];
+  }
 
   return {
     default_left,
@@ -1186,9 +1349,51 @@ async function loadMergedManifest() {
     default_bc,
     default_viewer_mode: local?.default_viewer_mode || base.default_viewer_mode || "custom",
     default_experiment: local?.default_experiment || base.default_experiment || null,
-    experiments: local?.experiments || base.experiments || null,
+    experiments: experimentsList,
     methods: methodsList,
   };
+}
+
+/** Synthetic two-method experiment with capture steps, traces, and POV renders. */
+async function loadDummyTrainingFixture() {
+  try {
+    const r = await fetch("./reports/dummy_training.json", { cache: "no-store" });
+    if (!r.ok) return null;
+    const report = await r.json();
+    const methods = (report.methods || []).map((row) => ({
+      id: row.viewer_id || `dummy_training_${row.method}`,
+      label: `[dummy_training] ${row.label || row.method}`,
+      experiment: "dummy_training",
+      campaign: report.campaign || "smoke",
+      url: row.ply_url || row.checkpoint_urls?.[String(report.protocol?.iters)] || "splats/mcmc_150k.ply",
+      num_gaussians: row.num_gaussians,
+      psnr: row.psnr,
+      ssim: row.ssim,
+      lpips: row.lpips,
+      peak_vram_mib: row.peak_vram_mib,
+      create_seconds: row.create_seconds,
+      notes: row.status || "ok",
+      status: row.status,
+      checkpoints: row.checkpoint_urls || {},
+      preview_urls: row.preview_urls || {},
+      preview_series: row.preview_series || [],
+      report: "reports/dummy_training.json",
+    }));
+    return {
+      methods,
+      experiment: {
+        id: "dummy_training",
+        label: report.label || "Dummy — Training Explorer",
+        campaign: report.campaign || "smoke",
+        description: report.description || "",
+        capture: report.capture || null,
+        report: "reports/dummy_training.json",
+        methods: methods.map((m) => m.id),
+      },
+    };
+  } catch {
+    return null;
+  }
 }
 
 function bindFollowerSelect(select, panel) {
@@ -1302,6 +1507,17 @@ async function main() {
   });
   window.addEventListener("resize", resizeAll);
   resizeAll();
+
+  hqApi = initHQ({
+    getMethodById: () => methodById,
+    getActiveExperimentId: () => activeExperimentId,
+    visiblePanels,
+    loadMethod,
+    updateOverlay,
+    refreshMethodOptionLabel,
+    isFlying: () => !!freecam?.isLocked,
+    onLiveUpdate: (job, meta) => applyLiveExperimentBadges(job, meta),
+  });
 
   const startMode =
     manifest.default_viewer_mode === "experiment" && experiments.length

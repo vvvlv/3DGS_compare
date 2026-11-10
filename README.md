@@ -26,13 +26,73 @@ Optional: `PORT=8080 HOST=0.0.0.0 ./serve.sh`
 
 Experiments are grouped from each method’s `experiment` field (or a `[tag]` label prefix). Optional manifest keys: `default_viewer_mode`, `default_experiment`, `experiments: [{ id, label, methods }]`.
 
+## Training Explorer
+
+The compare grid stays the main surface. **Training Explorer** opens an in-page side panel (metrics + training curves) and a bottom scrubber. It does **not** open a second browser window, and toggling it does not reload the experiment.
+
+| Control | Behavior |
+|---|---|
+| **Training Explorer** (toolbar) | Toggle the side panel + scrubber. |
+| **Bottom slider** | Steps through that experiment’s capture iterations (e.g. 50 / 150 / 300 / 500). `[` / `]` also step when not flying. |
+| **Interactive** | Load each panel’s checkpoint `.ply` for the selected step (Spark splat view). |
+| **Rendered** | Show fixed-POV preview images for the selected step instead of the live splat. |
+| **Camera** | Which fixed POV to show in Rendered mode (`00000` …). Each method/step can have several renders. |
+
+Side panel contents (from `viewer/reports/<experiment>.json` when published):
+
+- **Pipeline** live status (see below)
+- Protocol / campaign summary
+- Evaluation table (PSNR, SSIM, LPIPS, Gaussians, VRAM, create time)
+- Curves: checkpoint evaluation (PSNR / SSIM / LPIPS vs capture iteration from `preview_series`; click a point to scrub) and training traces (loss / Gaussians / VRAM vs step from `trace`)
+
+Pipeline publish should fill `checkpoint_urls` (mid-run PLYs) and `preview_urls` (fixed-POV PNGs under `viewer/previews/`). Optional `gt/` siblings support ground-truth references when present.
+
+### Live launch status
+
+While `launch.py` is running, it atomically writes `viewer/live.json` (gitignored). The Training Explorer polls that file about every 3s and shows:
+
+- Experiment label and overall status (`running` / `done` / `failed`, or `stale` if updates stop for ~3 minutes)
+- Per-method chips: `queued` → `running` → `done` / `failed` / `oom`
+
+**Queued** means methods still waiting in the **active** launch (sequential). There is no multi-experiment job queue — a second `launch.py` overwrites `live.json`.
+
+The experiment dropdown also badges the matching experiment, e.g. `(running 2/6)`.
+
+Start a smoke from the pipeline root:
+
+```bash
+cd project/pipeline
+python3 launch.py truck_smoke_200
+# optional: python3 launch.py truck_smoke_200 2>&1 | tee results/logs/truck_smoke_200.out
+```
+
+Then open the viewer (`./serve.sh`), switch to **Experiment** mode, and open **Training Explorer** → **Pipeline**.
+
+Capture notes (pipeline):
+
+- Nerfstudio mid-run previews use staged checkpoints + `ns-eval` (Nerfstudio cameras). Do **not** render exported NS PLYs with raw COLMAP/GraphDECO cameras — the frames do not match.
+- With `save_ply: false`, mid PLYs are not kept; only preview PNGs (and the final `splat.ply`) remain. Capture runs after each method’s train finishes.
+- Official mid-run PLYs with incomplete SH bands are zero-padded before `render.py` (Mini-Splatting). Diet’s DataLoader camera wrapper is unwrapped in `render.py`; if a method’s own renderer still fails, the launcher falls back to a shared GraphDECO preview path.
+- Training Explorer charts show labeled X/Y axes (step vs metric).
+
+### Dummy experiment
+
+A synthetic fixture ships for UI testing without a GPU run:
+
+- Report: [`reports/dummy_training.json`](reports/dummy_training.json)
+- Previews: `previews/dummy_training_method_{a,b}/iter_*/{renders,gt}/`
+- Checkpoints: reuses the two demo Truck PLYs so Interactive mode visibly swaps models
+
+Select **Experiment → Dummy — Training Explorer**, open **Training Explorer**, scrub the slider, and switch Interactive / Rendered / Camera.
+
 ## Controls
 
 Click view to pointer-lock · WASD + Space/Ctrl move (camera-relative) · Q/E roll · mouse look · Shift boost · hold RMB for fine control · Tab to exit.
 
 **Layout (custom):** single · side-by-side · 2×2 · 2×3.  
 **Load .ply:** open a Gaussian PLY from disk (see below).  
-**Settings:** look / move sliders (saved in `localStorage`).
+**Settings:** look / move sliders (saved in `localStorage`).  
+**Training Explorer:** side panel + capture scrubber (see above).
 
 ## Adding your own models
 
